@@ -1,6 +1,7 @@
 use std::{fs::File, io::Read, str::Chars};
 
 use clap::Parser;
+use common::use_recommended_logger;
 use eyre::{Context, Result};
 use log::{info, warn};
 
@@ -24,8 +25,14 @@ enum Token {
     Ident(String),
 }
 
+fn reverse(x: String) -> String {
+    x.chars().rev().collect()
+}
+
 fn main() -> Result<()> {
     let Cli { input, output } = Cli::parse();
+
+    use_recommended_logger(log::LevelFilter::Info).expect("Failed to set logger.");
 
     if !input.ends_with(".tl") {
         warn!("Input file `{input}` doesn't end in `.tl`. It should do that.")
@@ -33,13 +40,14 @@ fn main() -> Result<()> {
 
     let output = output.unwrap_or_else(|| {
         let mut chars = input.chars().rev().skip_while(|c| *c != '.');
-        if !chars.next().is_some() {
+        let next = chars.next();
+        if !next.is_some() {
             let output = format!("{input}.out");
             warn!("Input file `input` doesn't have a file extension.");
             warn!("Renaming output to {output} to not override input file.");
             return output;
         } else {
-            chars.collect()
+            reverse(chars.collect())
         }
     });
 
