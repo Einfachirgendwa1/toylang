@@ -1,11 +1,11 @@
 #![feature(yeet_expr)]
 
-use std::{fmt::Display, fs::File, io::Read, str::Chars};
+use std::{fmt::Display, fs::File, io::Read, iter::Peekable};
 
 use clap::Parser;
 use common::use_recommended_logger;
-use eyre::{eyre, Context, Report, Result};
-use log::{error, info, warn};
+use eyre::{eyre, Context, ContextCompat, Report, Result};
+use log::{debug, error, info, warn};
 
 #[derive(Parser)]
 struct Cli {
@@ -50,10 +50,12 @@ impl Display for Token {
     }
 }
 
+#[derive(Debug)]
 struct AST {
     statements: Vec<Statement>,
 }
 
+#[derive(Debug)]
 enum Statement {
     FunctionDefinition {
         function_name: String,
@@ -94,7 +96,7 @@ impl Display for Statement {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 enum Expression {
     FunctionCall {
         function_name: String,
@@ -127,7 +129,7 @@ impl Display for Expression {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 enum Operator {
     Add,
     Sub,
@@ -157,6 +159,22 @@ impl TryFrom<Token> for Operator {
             Token::Div => Ok(Operator::Div),
             x => do yeet eyre!("Cannot convert {x} into an operator."),
         }
+    }
+}
+
+trait Impossible<T> {
+    fn impossible(self) -> Result<T>;
+}
+
+impl<T> Impossible<T> for Result<T> {
+    fn impossible(self) -> Result<T> {
+        self.wrap_err("This error should be impossible to reach. This is a bug in the compiler.")
+    }
+}
+
+impl<T> Impossible<T> for Option<T> {
+    fn impossible(self) -> Result<T> {
+        self.wrap_err("This error should be impossible to reach. This is a bug in the compiler.")
     }
 }
 
@@ -197,28 +215,11 @@ fn main() -> Result<()> {
         .wrap_err_with(|| format!("Failed to read from `{input}`."))?;
 
     let tokens = tokenize(&content).wrap_err("Failed to tokenize.")?;
+    debug!("{tokens:?}");
     let ast = parse(tokens).wrap_err("Failed to parse.")?;
+    debug!("{ast:?}");
 
     Ok(())
-}
-
-struct SkipWhitespace<'a>(Chars<'a>);
-
-impl<'a> Iterator for SkipWhitespace<'a> {
-    type Item = <Chars<'a> as Iterator>::Item;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.0.next()? {
-            ' ' | '\n' | '\t' => self.next(),
-            x => Some(x),
-        }
-    }
-}
-
-impl<'a> SkipWhitespace<'a> {
-    fn temporary_dont_skip(&mut self) -> &mut Chars<'a> {
-        &mut self.0
-    }
 }
 
 fn is_digit(c: &char) -> bool {
@@ -229,19 +230,57 @@ fn is_normal_character(c: &char) -> bool {
     c.is_digit(36)
 }
 
-fn build_string_from_init_and_while(
-    c: &char,
-    i: &mut impl Iterator<Item = char>,
-    f: impl Fn(&char) -> bool,
-) -> String {
+fn is_legal(c: &char) -> bool {
+    ![' ', '\n', '\t'].contains(c)
+}
+
+struct SkipWhitespace<T>(Peekable<T>)
+where
+    T: Iterator<Item = char>;
+
+impl<T> Iterator for SkipWhitespace<T>
+where
+    T: Iterator<Item = char>,
+{
+    type Item = <T as Iterator>::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.0.next()? {
+            ref x if !is_legal(x) => self.next(),
+            x => Some(x),
+        }
+    }
+}
+
+impl<T> SkipWhitespace<T>
+where
+    T: Iterator<Item = char>,
+{
+    fn peek(&mut self) -> Option<<Self as Iterator>::Item> {
+        while let Some(peek) = self.0.peek() {
+            let peek = peek.clone();
+            if is_legal(&peek) {
+                return Some(peek);
+            }
+            self.0.next();
+        }
+        None
+    }
+}
+
+fn build_string_from_init_and_while(c: &char, mut next: impl FnMut() -> Option<char>) -> String {
     let mut out = c.to_string();
-    out.extend(i.by_ref().take_while(f));
+
+    while let Some(next) = next() {
+        out.push(next);
+    }
+
     out
 }
 
 fn tokenize(input: &str) -> Result<Vec<Token>> {
     let mut tokens = Vec::new();
-    let mut input = SkipWhitespace(input.chars());
+    let mut input = SkipWhitespace(input.chars().peekable());
 
     while let Some(next) = input.next() {
         let token = match next {
@@ -254,16 +293,20 @@ fn tokenize(input: &str) -> Result<Vec<Token>> {
             '=' => Token::Equal,
             ';' => Token::Semi,
             ref x if is_digit(x) => Token::Int(
-                build_string_from_init_and_while(x, &mut input, is_digit)
-                    .parse()
-                    .unwrap(),
+                build_string_from_init_and_while(x, || match is_digit(&input.peek()?) {
+                    true => input.next(),
+                    false => None,
+                })
+                .parse()
+                .unwrap(),
             ),
             ref x if is_normal_character(x) => {
-                let string = build_string_from_init_and_while(
-                    x,
-                    input.temporary_dont_skip(),
-                    is_normal_character,
-                );
+                let string = build_string_from_init_and_while(x, || {
+                    match is_normal_character(input.0.peek()?) {
+                        true => input.next(),
+                        false => None,
+                    }
+                });
 
                 match string.as_str() {
                     "let" => Token::Let,
@@ -351,12 +394,20 @@ fn get_next_statement<'a>(tokens: &mut impl Iterator<Item = Token>) -> Result<Op
         Token::LParen => {
             let mut tokens_in_parenthesis = Vec::new();
             loop {
+                let mut depth = 1;
                 match tokens.next() {
                     None => do yeet eyre!("Parenthesis was never closed."),
-                    Some(Token::LParen) => break,
+                    Some(Token::LParen) => depth += 1,
+                    Some(Token::RParen) => depth -= 1,
                     Some(x) => tokens_in_parenthesis.push(x),
                 }
+
+                if depth == 0 {
+                    break;
+                }
             }
+
+            tokens_in_parenthesis.push(Token::EOF);
 
             Statement::CodeBlock {
                 ast: parse(tokens_in_parenthesis)
@@ -370,17 +421,19 @@ fn get_next_statement<'a>(tokens: &mut impl Iterator<Item = Token>) -> Result<Op
 
         Token::EOF => return Ok(None),
 
-        Token::Int(value) => match tokens.next() {
-            None | Some(Token::Semi) => Statement::Expression {
+        Token::Int(value) => match tokens.next().impossible()? {
+            Token::Semi => Statement::Expression {
                 value: Expression::LiteralInt { value },
             },
-            Some(x @ (Token::Add | Token::Sub | Token::Mul | Token::Div)) => {
-                let expr = match get_next_statement(tokens).wrap_err_with(|| {
-                    format!("Failed to get right hand side of `{value} {x} ...`")
-                })? {
-                    None => do yeet eyre!("Expected right hand side of expression, found nothing."),
-                    Some(Statement::Expression { value }) => value,
-                    Some(x) => {
+            x @ (Token::Add | Token::Sub | Token::Mul | Token::Div) => {
+                let expr = match get_next_statement(tokens)
+                    .wrap_err_with(|| {
+                        format!("Failed to get right hand side of `{value} {x} ...`")
+                    })?
+                    .impossible()?
+                {
+                    Statement::Expression { value } => value,
+                    x => {
                         do yeet eyre!(
                             "Exprected right side of expression to be an expression, found {x}"
                         )
@@ -398,7 +451,7 @@ fn get_next_statement<'a>(tokens: &mut impl Iterator<Item = Token>) -> Result<Op
                 }
             }
 
-            Some(x) => do yeet eyre!("Integer {value} followed by invalid token: {x}"),
+            x => do yeet eyre!("Integer {value} followed by invalid token: {x}"),
         },
 
         Token::Semi => Statement::NullOpt,

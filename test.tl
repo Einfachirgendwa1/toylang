@@ -1,3 +1,2 @@
-let hallo = 1;
-
-print(hallo + * 1)
+let x = 1;
+print(x);
