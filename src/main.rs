@@ -558,6 +558,7 @@ fn parse(tokens: Vec<Token>) -> Result<AST> {
     Ok(AST { statements })
 }
 
+#[derive(Debug)]
 struct Function {
     arg_count: usize,
     binary: Vec<u8>,
@@ -599,11 +600,18 @@ fn resolve_expression(
                 function.write(text);
             }
 
+            let mut args = arguments.iter();
+
+            if let Some(arg) = args.next() {
+                store(text, Register::Rdi, arg, variables)?
+            }
+
             let offset = function.address.impossible()? - text.len() as i32 + 5;
             // jmp
             text.push(0xE9);
             // relative address
-            text.extend_from_slice(offset.to_le_bytes().as_slice());
+            write_num(text, offset)
+                .wrap_err_with(|| format!("Failed to store offset of {function:?}: {offset}"))?;
         }
         Expression::Variable { name } => {
             if variables.get(name.as_str()).is_none() {
@@ -622,6 +630,54 @@ fn resolve_expression(
         }
         _ => {}
     }
+    Ok(())
+}
+
+enum Register {
+    Eax,
+    Ecx,
+    Edx,
+    Rdi,
+}
+
+fn write_num(binary: &mut Vec<u8>, value: i32) -> Result<()> {
+    binary
+        .write_all(&mut value.to_le_bytes())
+        .wrap_err_with(|| format!("Failed to write {value} into output buffer."))
+}
+
+fn write_register_mov(binary: &mut Vec<u8>, register: Register) {
+    let opcode = match register {
+        Register::Eax => 0xB8,
+        Register::Ecx => 0xB9,
+        Register::Edx => 0xBA,
+        Register::Rdi => todo!(),
+    };
+    binary.push(opcode);
+}
+
+fn store(
+    binary: &mut Vec<u8>,
+    register: Register,
+    expression: &Expression,
+    variables: &mut HashMap<String, Expression>,
+) -> Result<()> {
+    match expression {
+        Expression::LiteralInt { value } => {
+            write_register_mov(binary, register);
+            write_num(binary, *value)?;
+        }
+        Expression::Variable { name } => {
+            let expr = variables
+                .get(name.as_str())
+                .wrap_err_with(|| format!("Variable {name} not found."))?
+                .clone();
+
+            store(binary, register, &expr, variables)?
+        }
+        _ => todo!(),
+    }
+
     Ok(())
 }
 
