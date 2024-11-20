@@ -1,6 +1,12 @@
 #![feature(yeet_expr)]
 
-use std::{fmt::Display, fs::File, io::Read, iter::Peekable};
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    fs::File,
+    io::{Read, Write},
+    iter::Peekable,
+};
 
 use clap::Parser;
 use common::use_recommended_logger;
@@ -221,9 +227,15 @@ fn main() -> Result<()> {
         .wrap_err_with(|| format!("Failed to read from `{input}`."))?;
 
     let tokens = tokenize(&content).wrap_err("Failed to tokenize.")?;
-    debug!("{tokens:?}");
     let ast = parse(tokens).wrap_err("Failed to parse.")?;
     debug!("{ast:?}");
+    let mut binary = generate_assembly(ast).wrap_err("Failed to compile.")?;
+    debug!("{binary:?}");
+
+    File::create(output)
+        .unwrap()
+        .write_all(&mut binary)
+        .unwrap();
 
     Ok(())
 }
@@ -544,4 +556,110 @@ fn parse(tokens: Vec<Token>) -> Result<AST> {
     }
 
     Ok(AST { statements })
+}
+
+struct Function {
+    arg_count: usize,
+    binary: Vec<u8>,
+    /// offset in .text, +0x400000 for real
+    address: Option<i32>,
+}
+
+impl Function {
+    fn write(&mut self, binary: &mut Vec<u8>) {
+        self.address = Some(binary.len() as i32);
+        binary.extend_from_slice(self.binary.as_slice());
+    }
+}
+
+fn resolve_expression(
+    value: Expression,
+    text: &mut Vec<u8>,
+    functions: &mut HashMap<String, Function>,
+    variables: &mut HashMap<String, Expression>,
+) -> Result<()> {
+    match value {
+        Expression::FunctionCall {
+            function_name,
+            arguments,
+        } => {
+            let Some(function) = functions.get_mut(function_name.as_str()) else {
+                do yeet eyre!("No such function `{function_name}`.")
+            };
+
+            if function.arg_count != arguments.len() {
+                do yeet eyre!(
+                    "Invalid number of arguments for {function_name}: Expected {}, got {}",
+                    function.arg_count,
+                    arguments.len()
+                )
+            }
+
+            if function.address == None {
+                function.write(text);
+            }
+
+            let offset = function.address.impossible()? - text.len() as i32 + 5;
+            // jmp
+            text.push(0xE9);
+            // relative address
+            text.extend_from_slice(offset.to_le_bytes().as_slice());
+        }
+        Expression::Variable { name } => {
+            if variables.get(name.as_str()).is_none() {
+                do yeet eyre!("Variable `{name}` not found.");
+            }
+        }
+        Expression::MathematicalOperation {
+            left_side,
+            right_side,
+            operator: _,
+        } => {
+            resolve_expression(*left_side, text, functions, variables)
+                .wrap_err("Error within mathematical operation.")?;
+            resolve_expression(*right_side, text, functions, variables)
+                .wrap_err("Error within mathematical operation.")?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn generate_assembly(ast: AST) -> Result<Vec<u8>> {
+    let mut text = Vec::new();
+    let mut functions: HashMap<String, Function> = HashMap::new();
+    let mut variables: HashMap<String, Expression> = HashMap::new();
+
+    // 48 89 f7                mov    %rsi,%rdi
+    // b8 01 00 00 00          mov    $0x1,%eax
+    // bf 01 00 00 00          mov    $0x1,%edi
+    // ba 05 00 00 00          mov    $0x5,%edx
+    // c3                      ret
+    let print = Function {
+        arg_count: 1,
+        binary: vec![
+            0x48, 0x89, 0xf7, 0xb8, 0x01, 0x00, 0x00, 0x00, 0xbf, 0x01, 0x0, 0x0, 0x0, 0xba, 0x05,
+            0x0, 0x0, 0x0, 0xc3,
+        ],
+        address: None,
+    };
+
+    functions.insert("print".to_string(), print);
+
+    for statement in ast.statements {
+        match statement {
+            Statement::Expression { value } => {
+                resolve_expression(value, &mut text, &mut functions, &mut variables)?
+            }
+            Statement::VariableAssignment {
+                variable_name,
+                value,
+            } => {
+                variables.insert(variable_name, value);
+            }
+            _ => todo!(),
+        }
+    }
+
+    Ok(text)
 }
