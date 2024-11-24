@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 #![feature(yeet_expr)]
 
 use std::{
@@ -6,12 +7,13 @@ use std::{
     fs::File,
     io::{Read, Write},
     iter::{repeat, Peekable},
+    slice,
 };
 
 use clap::Parser;
 use common::use_recommended_logger;
 use eyre::{eyre, Context, ContextCompat, Report, Result};
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 
 #[derive(Parser)]
 struct Cli {
@@ -228,11 +230,15 @@ fn main() -> Result<()> {
         .read_to_string(&mut content)
         .wrap_err_with(|| format!("Failed to read from `{input}`."))?;
 
+    // Tokenize
     let tokens = tokenize(&content).wrap_err("Failed to tokenize.")?;
     debug!("Tokenizer Output: {tokens:?}");
+
+    // Parse
     let ast = parse(tokens).wrap_err("Failed to parse.")?;
     debug!("Parser Output: {ast:?}");
 
+    // Compile
     let mut main = Function {
         code: ast,
         address: None,
@@ -241,11 +247,9 @@ fn main() -> Result<()> {
     let mut text = TextSection(Vec::new());
     main.write(&mut text)?;
     debug!("Compiler output: {text:?}");
+    let mut elf = text.generate_elf();
 
-    File::create(output)
-        .unwrap()
-        .write_all(&mut text.0)
-        .unwrap();
+    File::create(output).unwrap().write_all(&mut elf).unwrap();
 
     Ok(())
 }
@@ -570,6 +574,15 @@ fn parse(tokens: Vec<Token>) -> Result<AST> {
 
 type Address = u64;
 
+fn extend<A: Clone, B>(vec: &mut Vec<A>, b: B) {
+    unsafe {
+        vec.extend_from_slice(slice::from_raw_parts(
+            &b as *const B as *const A,
+            size_of::<B>(),
+        ))
+    }
+}
+
 #[derive(Clone, Debug)]
 struct TextSection(Vec<u8>);
 
@@ -582,6 +595,88 @@ impl TextSection {
         self.0
             .write_all(&binary)
             .expect("Failed to write to buffer.")
+    }
+
+    fn generate_elf(&self) -> Vec<u8> {
+        let mut vec = Vec::new();
+
+        let section_names: Vec<u8> = [b".text".to_vec(), b".shstrtab".to_vec(), b".data".to_vec()]
+            .into_iter()
+            .flatten()
+            .collect();
+        let text_offset = 0x100;
+        let entry: u64 = 0x400000 + text_offset;
+
+        let elf_header = Elf64Header {
+            e_ident: [0x7F, b'E', b'L', b'F', 2, 1, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0],
+            e_type: 2,
+            e_machine: 0x3E,
+            e_version: 1,
+            e_entry: entry,
+            e_phoff: size_of::<Elf64Header>() as u64,
+            e_shoff: size_of::<Elf64Header>() as u64 + size_of::<Elf64ProgramHeader>() as u64,
+            e_flags: 0,
+            e_ehsize: size_of::<Elf64Header> as u16,
+            e_phentsize: size_of::<Elf64ProgramHeader>() as u16,
+            e_phnum: 1,
+            e_shentsize: size_of::<Elf64SectionHeader>() as u16,
+            e_shnum: 3,
+            e_shstrndx: 1,
+        };
+        let program_header = Elf64ProgramHeader {
+            p_type: 1,
+            p_flags: 1 | 4,
+            p_offset: text_offset,
+            p_vaddr: entry,
+            p_paddr: entry,
+            p_filesz: self.0.len() as u64,
+            p_memsz: self.0.len() as u64,
+            p_align: 0x1000,
+        };
+        let text_section_header = Elf64SectionHeader {
+            sh_name: 0,
+            sh_type: 1,
+            sh_flags: 2 | 4,
+            sh_addr: entry,
+            sh_offset: entry,
+            sh_size: self.0.len() as u64,
+            sh_link: 0,
+            sh_info: 0,
+            sh_addralign: 0x10,
+            sh_entsize: 0,
+        };
+        let data_section_header = Elf64SectionHeader {
+            sh_name: 1,
+            sh_type: 1,
+            sh_flags: 1 | 2,
+            sh_addr: 0,
+            sh_offset: 0,
+            sh_size: 0,
+            sh_link: 0,
+            sh_info: 0,
+            sh_addralign: 0,
+            sh_entsize: 0,
+        };
+        let strings_section_header = Elf64SectionHeader {
+            sh_name: 2,
+            sh_type: 3,
+            sh_flags: 0,
+            sh_addr: 0,
+            sh_offset: 0,
+            sh_size: section_names.len() as u64,
+            sh_link: 0,
+            sh_info: 0,
+            sh_addralign: 0x10,
+            sh_entsize: 0,
+        };
+
+        extend(&mut vec, elf_header);
+        extend(&mut vec, program_header);
+        extend(&mut vec, text_section_header);
+        extend(&mut vec, data_section_header);
+        extend(&mut vec, strings_section_header);
+
+        vec
     }
 }
 
@@ -618,35 +713,35 @@ impl Register {
 
 #[derive(Clone, Debug)]
 struct Load {
-    code_pre: Vec<Executeable>,
-    returns: Loadeable,
-    code_post: Vec<Executeable>,
+    code_pre: Vec<Executable>,
+    returns: Loadable,
+    code_post: Vec<Executable>,
 }
 
 impl Load {
-    fn simple(loadeable: Loadeable) -> Self {
+    fn simple(loadable: Loadable) -> Self {
         Self {
             code_pre: vec![],
-            returns: loadeable,
+            returns: loadable,
             code_post: vec![],
         }
     }
 }
 
 #[derive(Clone, Debug)]
-enum Executeable {
+enum Executable {
     Push(Register),
     Pop(Register),
     Call(i32),
-    MoveLoad { src: Loadeable, dest: Loadeable },
+    MoveLoad { src: Loadable, dest: Loadable },
     Syscall,
     Ret,
 }
 
 #[derive(Clone, Debug)]
-enum Loadeable {
+enum Loadable {
     Register(Register),
-    Work(Vec<u8>, Box<Loadeable>),
+    Work(Vec<u8>, Box<Loadable>),
     Immediate(i64),
     Stack,
 }
@@ -661,7 +756,7 @@ enum Symbol {
 struct Function {
     code: AST,
     address: Option<Address>,
-    symbols: HashMap<String, Loadeable>,
+    symbols: HashMap<String, Loadable>,
 }
 
 #[derive(Clone, Debug)]
@@ -670,33 +765,33 @@ struct ProgramContext {
     text: TextSection,
 }
 
-fn sys_v_calling_convention() -> impl Iterator<Item = Loadeable> {
+fn sys_v_calling_convention() -> impl Iterator<Item = Loadable> {
     vec![
-        Loadeable::Register(Register::Rdi),
-        Loadeable::Register(Register::Rsi),
-        Loadeable::Register(Register::Rdx),
-        Loadeable::Register(Register::Rcx),
-        Loadeable::Register(Register::R8),
-        Loadeable::Register(Register::R9),
+        Loadable::Register(Register::Rdi),
+        Loadable::Register(Register::Rsi),
+        Loadable::Register(Register::Rdx),
+        Loadable::Register(Register::Rcx),
+        Loadable::Register(Register::R8),
+        Loadable::Register(Register::R9),
     ]
     .into_iter()
-    .chain(repeat(Loadeable::Stack))
+    .chain(repeat(Loadable::Stack))
 }
 
-fn load_all(parameters: Vec<String>) -> HashMap<String, Loadeable> {
+fn load_all(parameters: Vec<String>) -> HashMap<String, Loadable> {
     parameters
         .into_iter()
         .zip(sys_v_calling_convention())
         .collect()
 }
 
-fn move_all(parameters: Vec<Load>) -> Vec<Executeable> {
+fn move_all(parameters: Vec<Load>) -> Vec<Executable> {
     parameters
         .into_iter()
         .zip(sys_v_calling_convention())
         .map(|(mut src, dest)| {
             let mut vec = src.code_pre;
-            vec.push(Executeable::MoveLoad {
+            vec.push(Executable::MoveLoad {
                 src: src.returns,
                 dest,
             });
@@ -709,7 +804,7 @@ fn move_all(parameters: Vec<Load>) -> Vec<Executeable> {
 
 fn load(expression: &Expression, program_context: &mut ProgramContext) -> Result<Load> {
     let load = match expression {
-        Expression::LiteralInt { value } => Load::simple(Loadeable::Immediate(*value)),
+        Expression::LiteralInt { value } => Load::simple(Loadable::Immediate(*value)),
         Expression::Variable { name } => {
             let Symbol::Variable(_var) = program_context
                 .symbols
@@ -754,20 +849,20 @@ fn build_function(
     }
 
     let mut code_pre = move_all(loads);
-    code_pre.push(Executeable::Push(Register::Rax));
-    code_pre.push(Executeable::Call(relative));
+    code_pre.push(Executable::Push(Register::Rax));
+    code_pre.push(Executable::Call(relative));
 
     Ok(Load {
         code_pre,
-        returns: Loadeable::Register(Register::Rax),
-        code_post: vec![Executeable::Pop(Register::Rax)],
+        returns: Loadable::Register(Register::Rax),
+        code_post: vec![Executable::Pop(Register::Rax)],
     })
 }
 
 fn resolve_standalone_expression(
     value: &Expression,
     program_context: &mut ProgramContext,
-) -> Result<Vec<Executeable>> {
+) -> Result<Vec<Executable>> {
     match value {
         Expression::FunctionCall {
             function_name,
@@ -802,8 +897,8 @@ const fn extended(register: &Register) -> bool {
 
 // Source for the assembly: https://www.felixcloutier.com/x86
 impl ProgramContext {
-    fn assembly_function(&mut self, executeable: &Vec<Executeable>) -> Function {
-        self.binary_function(self.as_binary(executeable))
+    fn assembly_function(&mut self, executable: &Vec<Executable>) -> Function {
+        self.binary_function(self.as_binary(executable))
     }
 
     fn binary_function(&mut self, mut binary: Vec<u8>) -> Function {
@@ -812,29 +907,29 @@ impl ProgramContext {
         function
     }
 
-    fn load_onto_stack(&self, loadeable: &Loadeable) -> Vec<u8> {
-        match loadeable {
-            Loadeable::Stack => Vec::new(),
-            Loadeable::Register(x) => self.one_as_binary(&Executeable::Push(*x)),
-            Loadeable::Immediate(x) => self.one_as_binary(&Executeable::MoveLoad {
-                src: Loadeable::Immediate(*x),
-                dest: Loadeable::Register(Register::Rsp),
+    fn load_onto_stack(&self, loadable: &Loadable) -> Vec<u8> {
+        match loadable {
+            Loadable::Stack => Vec::new(),
+            Loadable::Register(x) => self.one_as_binary(&Executable::Push(*x)),
+            Loadable::Immediate(x) => self.one_as_binary(&Executable::MoveLoad {
+                src: Loadable::Immediate(*x),
+                dest: Loadable::Register(Register::Rsp),
             }),
-            Loadeable::Work(first, then) => {
+            Loadable::Work(first, then) => {
                 let mut vec = first.clone();
-                vec.append(&mut self.one_as_binary(&Executeable::MoveLoad {
+                vec.append(&mut self.one_as_binary(&Executable::MoveLoad {
                     src: *then.clone(),
-                    dest: Loadeable::Register(Register::Rsp),
+                    dest: Loadable::Register(Register::Rsp),
                 }));
                 vec
             }
         }
     }
 
-    fn load_into_register(&self, loadeable: &Loadeable, dest: &Register) -> Vec<u8> {
-        match loadeable {
-            Loadeable::Stack => self.one_as_binary(&Executeable::Pop(*dest)),
-            Loadeable::Register(src) => {
+    fn load_into_register(&self, loadable: &Loadable, dest: &Register) -> Vec<u8> {
+        match loadable {
+            Loadable::Stack => self.one_as_binary(&Executable::Pop(*dest)),
+            Loadable::Register(src) => {
                 // MOV r64, r/m64
                 // REX.W + 8B /r
                 vec![
@@ -843,15 +938,15 @@ impl ProgramContext {
                     ModRM::register(dest, src),
                 ]
             }
-            Loadeable::Work(first, then) => {
+            Loadable::Work(first, then) => {
                 let mut vec = first.clone();
-                vec.append(&mut self.one_as_binary(&Executeable::MoveLoad {
+                vec.append(&mut self.one_as_binary(&Executable::MoveLoad {
                     src: *then.clone(),
-                    dest: Loadeable::Register(*dest),
+                    dest: Loadable::Register(*dest),
                 }));
                 vec
             }
-            Loadeable::Immediate(x) => {
+            Loadable::Immediate(x) => {
                 // MOV r64, imm64
                 // REX.W, B8 + rd, io
                 let mut vec = vec![
@@ -864,52 +959,52 @@ impl ProgramContext {
         }
     }
 
-    fn one_as_binary(&self, executeable: &Executeable) -> Vec<u8> {
-        match executeable {
+    fn one_as_binary(&self, executable: &Executable) -> Vec<u8> {
+        match executable {
             // PUSH r64
             // 50 + rd
-            Executeable::Push(register) => match extended(register) {
+            Executable::Push(register) => match extended(register) {
                 false => vec![0x50 + *register as u8],
                 true => vec![0x41, *register as u8 - 8],
             },
             // POP r64
             // 58 + rd
-            Executeable::Pop(register) => match extended(register) {
+            Executable::Pop(register) => match extended(register) {
                 false => vec![0x58 + *register as u8],
                 true => vec![0x41, *register as u8],
             },
-            Executeable::MoveLoad { src, dest } => match (src, dest) {
-                (_, Loadeable::Immediate(_)) => {
+            Executable::MoveLoad { src, dest } => match (src, dest) {
+                (_, Loadable::Immediate(_)) => {
                     panic!("Cannot move a value into an immediate.")
                 }
-                (_, Loadeable::Work(_, _)) => {
+                (_, Loadable::Work(_, _)) => {
                     panic!("Cannot load into work.")
                 }
-                (loadeable, Loadeable::Stack) => self.load_onto_stack(loadeable),
-                (loadeable, Loadeable::Register(dest)) => self.load_into_register(loadeable, dest),
+                (loadable, Loadable::Stack) => self.load_onto_stack(loadable),
+                (loadable, Loadable::Register(dest)) => self.load_into_register(loadable, dest),
             },
             // CALL rel32
-            Executeable::Call(relative_offset) => vec![0xE8]
+            Executable::Call(relative_offset) => vec![0xE8]
                 .into_iter()
                 .chain(relative_offset.to_le_bytes())
                 .collect(),
             // SYSCALL
             // 0F 05
-            Executeable::Syscall => {
+            Executable::Syscall => {
                 vec![0x0f, 0x05]
             }
             // RET
             // C3
-            Executeable::Ret => {
+            Executable::Ret => {
                 vec![0xC3]
             }
         }
     }
 
-    fn as_binary(&self, executeable: &Vec<Executeable>) -> Vec<u8> {
+    fn as_binary(&self, executable: &Vec<Executable>) -> Vec<u8> {
         let mut binary = Vec::new();
-        for executeable in executeable {
-            binary.append(&mut self.one_as_binary(executeable));
+        for executable in executable {
+            binary.append(&mut self.one_as_binary(executable));
         }
         binary
     }
@@ -917,37 +1012,37 @@ impl ProgramContext {
 
 fn basic_functions(program_context: &mut ProgramContext) -> Result<()> {
     let putchar = program_context.assembly_function(&vec![
-        Executeable::MoveLoad {
-            src: Loadeable::Register(Register::Rdi),
-            dest: Loadeable::Register(Register::Rsi),
+        Executable::MoveLoad {
+            src: Loadable::Register(Register::Rdi),
+            dest: Loadable::Register(Register::Rsi),
         },
-        Executeable::MoveLoad {
-            src: Loadeable::Immediate(1),
-            dest: Loadeable::Register(Register::Rax),
+        Executable::MoveLoad {
+            src: Loadable::Immediate(1),
+            dest: Loadable::Register(Register::Rax),
         },
-        Executeable::MoveLoad {
-            src: Loadeable::Immediate(1),
-            dest: Loadeable::Register(Register::Rdi),
+        Executable::MoveLoad {
+            src: Loadable::Immediate(1),
+            dest: Loadable::Register(Register::Rdi),
         },
-        Executeable::MoveLoad {
-            src: Loadeable::Immediate(1),
-            dest: Loadeable::Register(Register::Rdx),
+        Executable::MoveLoad {
+            src: Loadable::Immediate(1),
+            dest: Loadable::Register(Register::Rdx),
         },
-        Executeable::Syscall,
-        Executeable::Ret,
+        Executable::Syscall,
+        Executable::Ret,
     ]);
 
     let exit = program_context.assembly_function(&vec![
-        Executeable::MoveLoad {
-            src: Loadeable::Immediate(60),
-            dest: Loadeable::Register(Register::Rax),
+        Executable::MoveLoad {
+            src: Loadable::Immediate(60),
+            dest: Loadable::Register(Register::Rax),
         },
-        Executeable::MoveLoad {
-            src: Loadeable::Immediate(0),
-            dest: Loadeable::Register(Register::Rdi),
+        Executable::MoveLoad {
+            src: Loadable::Immediate(0),
+            dest: Loadable::Register(Register::Rdi),
         },
-        Executeable::Syscall,
-        Executeable::Ret,
+        Executable::Syscall,
+        Executable::Ret,
     ]);
 
     program_context
@@ -1100,21 +1195,65 @@ impl Function {
         }
 
         for statement in statements {
-            let executeable = match statement {
+            let executable = match statement {
                 Statement::Expression { value } => {
                     resolve_standalone_expression(&value, &mut program_context)
                         .wrap_err("Failed to resolve standalone expression.")?
                 }
                 _ => todo!(),
             };
-            debug!("Generated high level assembly: {executeable:?}");
+            debug!("Generated high level assembly: {executable:?}");
             program_context
                 .text
                 .0
-                .write_all(&mut program_context.as_binary(&executeable))
+                .write_all(&mut program_context.as_binary(&executable))
                 .unwrap();
         }
 
         Ok(program_context.text.0)
     }
+}
+
+#[repr(C)]
+struct Elf64Header {
+    e_ident: [u8; 16],
+    e_type: u16,
+    e_machine: u16,
+    e_version: u32,
+    e_entry: u64,
+    e_phoff: u64,
+    e_shoff: u64,
+    e_flags: u32,
+    e_ehsize: u16,
+    e_phentsize: u16,
+    e_phnum: u16,
+    e_shentsize: u16,
+    e_shnum: u16,
+    e_shstrndx: u16,
+}
+
+#[repr(C)]
+struct Elf64ProgramHeader {
+    p_type: u32,
+    p_flags: u32,
+    p_offset: u64,
+    p_vaddr: u64,
+    p_paddr: u64,
+    p_filesz: u64,
+    p_memsz: u64,
+    p_align: u64,
+}
+
+#[repr(C)]
+struct Elf64SectionHeader {
+    sh_name: u32,
+    sh_type: u32,
+    sh_flags: u64,
+    sh_addr: u64,
+    sh_offset: u64,
+    sh_size: u64,
+    sh_link: u32,
+    sh_info: u32,
+    sh_addralign: u64,
+    sh_entsize: u64,
 }
