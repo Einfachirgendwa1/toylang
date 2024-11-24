@@ -1,2 +1,1 @@
-let x = 1;
-print(x + 1);
+putchar(65);
