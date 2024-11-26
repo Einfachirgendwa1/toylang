@@ -4,9 +4,10 @@
 use std::{
     collections::HashMap,
     fmt::Display,
-    fs::File,
+    fs::{metadata, set_permissions, File},
     io::{Read, Write},
     iter::{repeat, Peekable},
+    os::unix::fs::PermissionsExt,
     slice,
 };
 
@@ -244,13 +245,15 @@ fn main() -> Result<()> {
         address: None,
         symbols: HashMap::new(),
     };
-    let mut text = TextSection(Vec::new());
-    main.write(&mut text)?;
-    debug!("Compiler output: {text:?}");
-    let mut elf = text.generate_elf();
+    let mut program = Program::new();
+    main.write(&mut program.text)?;
+    debug!("Compiler output: {program:?}");
+    let mut elf = program.generate_elf();
 
-    File::create(output).unwrap().write_all(&mut elf).unwrap();
-
+    File::create(&output).unwrap().write_all(&mut elf).unwrap();
+    let mut permissions = metadata(&output).unwrap().permissions();
+    permissions.set_mode(permissions.mode() | 0o111);
+    set_permissions(output, permissions).unwrap();
     Ok(())
 }
 
@@ -583,100 +586,11 @@ fn extend<A: Clone, B>(vec: &mut Vec<A>, b: B) {
     }
 }
 
-#[derive(Clone, Debug)]
-struct TextSection(Vec<u8>);
-
-impl TextSection {
-    fn head(&self) -> Address {
-        self.0.len() as Address
-    }
-
+impl Program {
     fn write_all(&mut self, binary: &[u8]) {
-        self.0
+        self.text
             .write_all(&binary)
             .expect("Failed to write to buffer.")
-    }
-
-    fn generate_elf(&self) -> Vec<u8> {
-        let mut vec = Vec::new();
-
-        let section_names: Vec<u8> = [b".text".to_vec(), b".shstrtab".to_vec(), b".data".to_vec()]
-            .into_iter()
-            .flatten()
-            .collect();
-        let text_offset = 0x100;
-        let entry: u64 = 0x400000 + text_offset;
-
-        let elf_header = Elf64Header {
-            e_ident: [0x7F, b'E', b'L', b'F', 2, 1, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0],
-            e_type: 2,
-            e_machine: 0x3E,
-            e_version: 1,
-            e_entry: entry,
-            e_phoff: size_of::<Elf64Header>() as u64,
-            e_shoff: size_of::<Elf64Header>() as u64 + size_of::<Elf64ProgramHeader>() as u64,
-            e_flags: 0,
-            e_ehsize: size_of::<Elf64Header> as u16,
-            e_phentsize: size_of::<Elf64ProgramHeader>() as u16,
-            e_phnum: 1,
-            e_shentsize: size_of::<Elf64SectionHeader>() as u16,
-            e_shnum: 3,
-            e_shstrndx: 1,
-        };
-        let program_header = Elf64ProgramHeader {
-            p_type: 1,
-            p_flags: 1 | 4,
-            p_offset: text_offset,
-            p_vaddr: entry,
-            p_paddr: entry,
-            p_filesz: self.0.len() as u64,
-            p_memsz: self.0.len() as u64,
-            p_align: 0x1000,
-        };
-        let text_section_header = Elf64SectionHeader {
-            sh_name: 0,
-            sh_type: 1,
-            sh_flags: 2 | 4,
-            sh_addr: entry,
-            sh_offset: entry,
-            sh_size: self.0.len() as u64,
-            sh_link: 0,
-            sh_info: 0,
-            sh_addralign: 0x10,
-            sh_entsize: 0,
-        };
-        let data_section_header = Elf64SectionHeader {
-            sh_name: 1,
-            sh_type: 1,
-            sh_flags: 1 | 2,
-            sh_addr: 0,
-            sh_offset: 0,
-            sh_size: 0,
-            sh_link: 0,
-            sh_info: 0,
-            sh_addralign: 0,
-            sh_entsize: 0,
-        };
-        let strings_section_header = Elf64SectionHeader {
-            sh_name: 2,
-            sh_type: 3,
-            sh_flags: 0,
-            sh_addr: 0,
-            sh_offset: 0,
-            sh_size: section_names.len() as u64,
-            sh_link: 0,
-            sh_info: 0,
-            sh_addralign: 0x10,
-            sh_entsize: 0,
-        };
-
-        extend(&mut vec, elf_header);
-        extend(&mut vec, program_header);
-        extend(&mut vec, text_section_header);
-        extend(&mut vec, data_section_header);
-        extend(&mut vec, strings_section_header);
-
-        vec
     }
 }
 
@@ -760,9 +674,20 @@ struct Function {
 }
 
 #[derive(Clone, Debug)]
-struct ProgramContext {
+struct Program {
     symbols: HashMap<String, Symbol>,
-    text: TextSection,
+    text: Vec<u8>,
+    data: Vec<u8>,
+}
+
+impl Program {
+    fn new() -> Self {
+        Program {
+            symbols: HashMap::new(),
+            text: Vec::new(),
+            data: b"test".to_vec(),
+        }
+    }
 }
 
 fn sys_v_calling_convention() -> impl Iterator<Item = Loadable> {
@@ -802,7 +727,7 @@ fn move_all(parameters: Vec<Load>) -> Vec<Executable> {
         .collect()
 }
 
-fn load(expression: &Expression, program_context: &mut ProgramContext) -> Result<Load> {
+fn load(expression: &Expression, program_context: &mut Program) -> Result<Load> {
     let load = match expression {
         Expression::LiteralInt { value } => Load::simple(Loadable::Immediate(*value)),
         Expression::Variable { name } => {
@@ -831,7 +756,7 @@ fn load(expression: &Expression, program_context: &mut ProgramContext) -> Result
 fn build_function(
     name: &str,
     args: &Vec<Expression>,
-    program_context: &mut ProgramContext,
+    program_context: &mut Program,
 ) -> Result<Load> {
     let Symbol::Function(function) = program_context
         .symbols
@@ -861,7 +786,7 @@ fn build_function(
 
 fn resolve_standalone_expression(
     value: &Expression,
-    program_context: &mut ProgramContext,
+    program_context: &mut Program,
 ) -> Result<Vec<Executable>> {
     match value {
         Expression::FunctionCall {
@@ -896,14 +821,14 @@ const fn extended(register: &Register) -> bool {
 }
 
 // Source for the assembly: https://www.felixcloutier.com/x86
-impl ProgramContext {
+impl Program {
     fn assembly_function(&mut self, executable: &Vec<Executable>) -> Function {
         self.binary_function(self.as_binary(executable))
     }
 
     fn binary_function(&mut self, mut binary: Vec<u8>) -> Function {
         let function = Function::dummy(&self.text);
-        self.text.0.append(&mut binary);
+        self.text.append(&mut binary);
         function
     }
 
@@ -1010,7 +935,7 @@ impl ProgramContext {
     }
 }
 
-fn basic_functions(program_context: &mut ProgramContext) -> Result<()> {
+fn basic_functions(program_context: &mut Program) -> Result<()> {
     let putchar = program_context.assembly_function(&vec![
         Executable::MoveLoad {
             src: Loadable::Register(Register::Rdi),
@@ -1133,17 +1058,17 @@ impl ModRM {
 }
 
 impl Function {
-    fn dummy(text: &TextSection) -> Self {
+    fn dummy(text: &Vec<u8>) -> Self {
         Function {
             code: AST {
                 statements: Vec::new(),
             },
-            address: Some(text.head()),
+            address: Some(text.len() as u64),
             symbols: HashMap::new(),
         }
     }
 
-    fn get_relative_jump(&mut self, text: &mut TextSection) -> Result<i32> {
+    fn get_relative_jump(&mut self, text: &mut Vec<u8>) -> Result<i32> {
         let address = match self.address {
             Some(address) => address,
             None => {
@@ -1152,20 +1077,17 @@ impl Function {
             }
         };
 
-        Ok(text.head() as i32 - address as i32 + 5)
+        Ok(text.len() as i32 - address as i32 + 5)
     }
 
-    fn write(&mut self, text: &mut TextSection) -> Result<()> {
-        self.address = Some(text.head());
-        text.write_all(&self.compile()?);
+    fn write(&mut self, program: &mut Vec<u8>) -> Result<()> {
+        self.address = Some(program.len() as u64);
+        program.write_all(&self.compile()?).unwrap();
         Ok(())
     }
 
     fn compile(&self) -> Result<Vec<u8>> {
-        let mut program_context = ProgramContext {
-            symbols: HashMap::new(),
-            text: TextSection(Vec::new()),
-        };
+        let mut program_context = Program::new();
         let mut functions_within = HashMap::new();
 
         basic_functions(&mut program_context)?;
@@ -1205,12 +1127,11 @@ impl Function {
             debug!("Generated high level assembly: {executable:?}");
             program_context
                 .text
-                .0
                 .write_all(&mut program_context.as_binary(&executable))
                 .unwrap();
         }
 
-        Ok(program_context.text.0)
+        Ok(program_context.text)
     }
 }
 
@@ -1256,4 +1177,113 @@ struct Elf64SectionHeader {
     sh_info: u32,
     sh_addralign: u64,
     sh_entsize: u64,
+}
+
+impl Program {
+    fn generate_elf(mut self) -> Vec<u8> {
+        let mut vec = Vec::new();
+
+        let bin = |slice: &[&str]| {
+            slice
+                .iter()
+                .map(|x| x.as_bytes().to_vec())
+                .flatten()
+                .collect::<Vec<u8>>()
+        };
+
+        let sections = [".text\0", ".data\0", ".shstrtab\0"];
+        let mut sections_bin = bin(&sections);
+        let mut n = 0;
+        let mut next_section = || {
+            let res = bin(&sections[0..n as usize]).len() as u32;
+            n += 1;
+            res
+        };
+
+        let text_len = self.text.len() as u64;
+        let data_len = self.data.len() as u64;
+
+        let elf_header_size = size_of::<Elf64Header>() as u64;
+        let elf_program_header_size = size_of::<Elf64ProgramHeader>() as u64;
+        let elf_section_header_size = size_of::<Elf64SectionHeader>() as u64;
+
+        let mut head = elf_header_size + elf_program_header_size + 3 * elf_section_header_size;
+
+        let elf_header = Elf64Header {
+            e_ident: [0x7F, b'E', b'L', b'F', 2, 1, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0],
+            e_type: 2,
+            e_machine: 0x3E,
+            e_version: 1,
+            e_entry: 0x400000,
+            e_phoff: elf_header_size,
+            e_shoff: elf_header_size + elf_program_header_size,
+            e_flags: 0,
+            e_ehsize: elf_header_size as u16,
+            e_phentsize: elf_program_header_size as u16,
+            e_phnum: 1,
+            e_shentsize: elf_section_header_size as u16,
+            e_shnum: 3,
+            e_shstrndx: 2,
+        };
+        let program_header = Elf64ProgramHeader {
+            p_type: 1,
+            p_flags: 1 | 4,
+            p_offset: head,
+            p_vaddr: 0x400000,
+            p_paddr: 0x400000,
+            p_filesz: text_len + data_len,
+            p_memsz: text_len + data_len,
+            p_align: 0x1000,
+        };
+        let text_section_header = Elf64SectionHeader {
+            sh_name: next_section(),
+            sh_type: 1,
+            sh_flags: 2 | 4,
+            sh_addr: 0x400000,
+            sh_offset: head,
+            sh_size: text_len,
+            sh_link: 0,
+            sh_info: 0,
+            sh_addralign: 0x10,
+            sh_entsize: 0,
+        };
+        head += text_section_header.sh_size;
+        let data_section_header = Elf64SectionHeader {
+            sh_name: next_section(),
+            sh_type: 1,
+            sh_flags: 1 | 2,
+            sh_addr: 0x400000 + text_section_header.sh_size,
+            sh_offset: head,
+            sh_size: data_len,
+            sh_link: 0,
+            sh_info: 0,
+            sh_addralign: 0x10,
+            sh_entsize: 0,
+        };
+        head += data_section_header.sh_size;
+        let strings_section_header = Elf64SectionHeader {
+            sh_name: next_section(),
+            sh_type: 3,
+            sh_flags: 0,
+            sh_addr: 0,
+            sh_offset: head,
+            sh_size: sections_bin.len() as u64,
+            sh_link: 0,
+            sh_info: 0,
+            sh_addralign: 1,
+            sh_entsize: 0,
+        };
+
+        extend(&mut vec, elf_header);
+        extend(&mut vec, program_header);
+        extend(&mut vec, text_section_header);
+        extend(&mut vec, data_section_header);
+        extend(&mut vec, strings_section_header);
+
+        vec.append(&mut self.text);
+        vec.append(&mut self.data);
+        vec.append(&mut sections_bin);
+
+        vec
+    }
 }
