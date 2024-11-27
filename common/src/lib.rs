@@ -26,7 +26,7 @@ impl Log for Logger {
     fn flush(&self) {}
 }
 
-pub fn use_recommended_logger(_level_filter: LevelFilter) -> Result<(), SetLoggerError> {
+pub fn use_logger(_level_filter: LevelFilter) -> Result<(), SetLoggerError> {
     set_logger(&Logger {})?;
 
     #[cfg(debug_assertions)]
