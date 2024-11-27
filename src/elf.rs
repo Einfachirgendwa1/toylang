@@ -24,8 +24,7 @@ fn align_vector(vec: &mut Vec<u8>, alignment: u64) -> u64 {
 }
 
 fn align_program_header_offset(p_vaddr: u64, offset: u64) -> Aligned {
-    let required =
-        dbg!(PAGE_SIZE + dbg!(p_vaddr % PAGE_SIZE) - dbg!(offset % PAGE_SIZE)) % PAGE_SIZE;
+    let required = (PAGE_SIZE + (p_vaddr % PAGE_SIZE) - (offset % PAGE_SIZE)) % PAGE_SIZE;
     Aligned {
         required_padding: required,
         padding: vec![0; required as usize],
@@ -67,7 +66,7 @@ impl Program {
 
         let mut vec = Vec::new();
 
-        let bin = |slice: &[&str]| {
+        let as_vec_u8 = |slice: &[&str]| {
             slice
                 .iter()
                 .map(|x| x.as_bytes().to_vec())
@@ -76,8 +75,8 @@ impl Program {
         };
 
         let sections = [".text\0", ".data\0", ".shstrtab\0"];
-        let mut sections_bin = bin(&sections);
-        let mut next_section = growing_subslice(&sections, |slice| bin(slice).len() as u32);
+        let mut sections_bin = as_vec_u8(&sections);
+        let mut next_section = growing_subslice(&sections, |slice| as_vec_u8(slice).len() as u32);
 
         let text_len = align_vector(&mut self.text, SECTION_ALIGNMENT);
         let data_len = align_vector(&mut self.data, SECTION_ALIGNMENT);
@@ -117,7 +116,7 @@ impl Program {
             p_memsz: text_len,
             p_align: PAGE_SIZE,
         };
-        dbg!(&text_program_header).assert_valid();
+        text_program_header.assert_valid();
         p_vaddr += text_len;
 
         let data_program_header = Elf64ProgramHeader {
@@ -130,7 +129,7 @@ impl Program {
             p_memsz: data_len,
             p_align: PAGE_SIZE,
         };
-        dbg!(&data_program_header).assert_valid();
+        data_program_header.assert_valid();
 
         let text_section_header = Elf64SectionHeader {
             sh_name: next_section(),
