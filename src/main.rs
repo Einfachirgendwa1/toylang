@@ -7,6 +7,7 @@ use std::{
     fs::{metadata, set_permissions, File},
     io::{Read, Write},
     iter::{repeat, Peekable},
+    ops::AddAssign,
     os::unix::fs::PermissionsExt,
     slice,
 };
@@ -1165,6 +1166,26 @@ fn align_program_header_offset(p_vaddr: u64, offset: u64) -> Aligned {
     }
 }
 
+fn inc<X>(x: &mut X) -> X
+where
+    X: Clone,
+    X: AddAssign<X>,
+    i8: Into<X>,
+{
+    let pre = x.clone();
+    *x += 1.into();
+    pre
+}
+
+fn growing_subslice<'a, T, A, F>(vec: &'a [T], f: F) -> impl FnMut() -> A + 'a
+where
+    T: 'a,
+    F: Fn(&'a [T]) -> A + 'a,
+{
+    let mut n = 0;
+    move || f(&vec[0..inc(&mut n) as usize])
+}
+
 impl Program {
     fn generate_elf(mut self) -> Vec<u8> {
         let mut p_vaddr = 0x400000;
@@ -1181,14 +1202,9 @@ impl Program {
 
         let sections = [".text\0", ".data\0", ".shstrtab\0"];
         let mut sections_bin = bin(&sections);
-        let mut n = 0;
-        let mut next_section = || {
-            let res = bin(&sections[0..n as usize]).len() as u32;
-            n += 1;
-            res
-        };
+        let mut next_section = growing_subslice(&sections, |slice| bin(slice).len() as u32);
 
-        let text_len = dbg!(align_vector(&mut self.text, SECTION_ALIGNMENT));
+        let text_len = align_vector(&mut self.text, SECTION_ALIGNMENT);
         let data_len = align_vector(&mut self.data, SECTION_ALIGNMENT);
 
         let elf_header_size = size_of::<Elf64Header>() as u64;
