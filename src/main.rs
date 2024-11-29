@@ -7,6 +7,7 @@ mod misc;
 mod parser;
 
 use compiler::*;
+use elf::generate_elf;
 use lexer::*;
 use misc::*;
 use parser::*;
@@ -84,7 +85,7 @@ fn main() -> Result<()> {
     let mut program = Program::new();
     main.write(&mut program.text)?;
     debug!("Compiler output: {program:?}");
-    let elf = program.generate_elf();
+    let elf = generate_elf(program.text, program.data);
 
     File::create(&output).unwrap().write_all(&elf).unwrap();
     let mut permissions = metadata(&output).unwrap().permissions();
