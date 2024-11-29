@@ -47,11 +47,11 @@ fn main() -> Result<()> {
     let output = output.unwrap_or_else(|| {
         let mut chars = input.chars().rev().skip_while(|c| *c != '.');
         let next = chars.next();
-        if !next.is_some() {
+        if next.is_none() {
             let output = format!("{input}.out");
             warn!("Input file `input` doesn't have a file extension.");
             warn!("Renaming output to {output} to not override input file.");
-            return output;
+            output
         } else {
             reverse(chars.collect())
         }
@@ -84,9 +84,9 @@ fn main() -> Result<()> {
     let mut program = Program::new();
     main.write(&mut program.text)?;
     debug!("Compiler output: {program:?}");
-    let mut elf = program.generate_elf();
+    let elf = program.generate_elf();
 
-    File::create(&output).unwrap().write_all(&mut elf).unwrap();
+    File::create(&output).unwrap().write_all(&elf).unwrap();
     let mut permissions = metadata(&output).unwrap().permissions();
     permissions.set_mode(permissions.mode() | 0o111);
     set_permissions(output, permissions).unwrap();

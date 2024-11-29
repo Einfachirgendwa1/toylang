@@ -6,7 +6,7 @@ use std::fmt::Display;
 use eyre::{eyre, Report, Result, WrapErr};
 
 #[derive(Clone, Debug)]
-pub struct AST {
+pub struct Ast {
     pub statements: Vec<Statement>,
 }
 
@@ -15,7 +15,7 @@ pub enum Statement {
     FunctionDefinition {
         function_name: String,
         parameters: Vec<String>,
-        code: AST,
+        code: Ast,
     },
     VariableAssignment {
         variable_name: String,
@@ -28,7 +28,7 @@ pub enum Statement {
         value: Expression,
     },
     CodeBlock {
-        ast: AST,
+        ast: Ast,
     },
     NullOpt,
 }
@@ -118,7 +118,7 @@ impl TryFrom<Token> for Operator {
             Token::Sub => Ok(Operator::Sub),
             Token::Mul => Ok(Operator::Mul),
             Token::Div => Ok(Operator::Div),
-            x => return Err(eyre!("Cannot convert {x} into an operator.")),
+            x => Err(eyre!("Cannot convert {x} into an operator.")),
         }
     }
 }
@@ -129,7 +129,7 @@ pub fn remaining_expression_parsing(
     on_failed_parsing: impl FnOnce(Token, &mut dyn Iterator<Item = Token>) -> Result<Statement>,
 ) -> Result<Statement> {
     let statement = match tokens.next().impossible()? {
-        Token::Semi | Token::EOF => Statement::Expression { value: expression },
+        Token::Semi | Token::Eof => Statement::Expression { value: expression },
         x @ (Token::Add | Token::Sub | Token::Mul | Token::Div) => {
             let expr = match get_next_statement(tokens)
                 .wrap_err_with(|| {
@@ -178,13 +178,11 @@ pub fn find_closing_brace(tokens: &mut dyn Iterator<Item = Token>) -> Result<Vec
             break;
         }
     }
-    tokens_in_parens.push(Token::EOF);
+    tokens_in_parens.push(Token::Eof);
     Ok(tokens_in_parens)
 }
 
-pub fn get_next_statement<'a>(
-    tokens: &mut impl Iterator<Item = Token>,
-) -> Result<Option<Statement>> {
+pub fn get_next_statement(tokens: &mut impl Iterator<Item = Token>) -> Result<Option<Statement>> {
     let Some(next) = tokens.next() else {
         return Ok(None);
     };
@@ -229,7 +227,7 @@ pub fn get_next_statement<'a>(
         // TODO: Remove duplication
         Token::Add => match get_next_statement(tokens) {
             Err(err) => {
-                Err(err).wrap_err_with(|| format!("Failed to get the value after the `+`"))?
+                Err(err).wrap_err_with(|| "Failed to get the value after the `+`".to_string())?
             }
             Ok(None) => return Err(eyre!("Unexpected `+` with nothing after it.")),
             Ok(Some(Statement::Expression { value })) => Statement::Expression { value },
@@ -237,7 +235,7 @@ pub fn get_next_statement<'a>(
         },
         Token::Sub => match get_next_statement(tokens) {
             Err(err) => {
-                Err(err).wrap_err_with(|| format!("Failed to get the value after the `-`"))?
+                Err(err).wrap_err_with(|| "Failed to get the value after the `-`".to_string())?
             }
             Ok(None) => return Err(eyre!("Unexpected `-` with nothing after it.")),
             Ok(Some(Statement::Expression { value })) => Statement::Expression {
@@ -262,11 +260,11 @@ pub fn get_next_statement<'a>(
             return Err(eyre!("Detected junk: `{x}`"))
         }
 
-        Token::EOF => return Ok(None),
+        Token::Eof => return Ok(None),
 
         Token::Int(value) => {
             remaining_expression_parsing(Expression::LiteralInt { value }, tokens, |token, _| {
-                return Err(eyre!("Expression followed by invalid token: {token}"));
+                Err(eyre!("Expression followed by invalid token: {token}"))
             })
             .wrap_err_with(|| format!("Failed to parse the tokens after the integer {value}"))?
         }
@@ -314,7 +312,7 @@ pub fn get_next_statement<'a>(
                         },
                     })
                 }
-                x => return Err( eyre!("Invalid token after identifier {ident}: {x}")),
+                x => Err( eyre!("Invalid token after identifier {ident}: {x}")),
             },
         )
         .wrap_err_with(|| format!("Failed to parse the expression starting with {ident_clone}"))?
@@ -324,7 +322,7 @@ pub fn get_next_statement<'a>(
     Ok(Some(statement))
 }
 
-pub fn parse(tokens: Vec<Token>) -> Result<AST> {
+pub fn parse(tokens: Vec<Token>) -> Result<Ast> {
     let mut statements = Vec::new();
     let mut tokens = tokens.into_iter();
 
@@ -336,5 +334,5 @@ pub fn parse(tokens: Vec<Token>) -> Result<AST> {
         }
     }
 
-    Ok(AST { statements })
+    Ok(Ast { statements })
 }

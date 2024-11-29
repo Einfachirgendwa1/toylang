@@ -1,4 +1,4 @@
-use crate::{Expression, Impossible, Statement, AST};
+use crate::{Ast, Expression, Impossible, Statement};
 
 use std::{collections::HashMap, io::Write, iter::repeat};
 
@@ -10,7 +10,7 @@ type Address = u64;
 impl Program {
     fn write_all(&mut self, binary: &[u8]) {
         self.text
-            .write_all(&binary)
+            .write_all(binary)
             .expect("Failed to write to buffer.")
     }
 }
@@ -89,7 +89,7 @@ pub enum Symbol {
 
 #[derive(Clone, Debug)]
 pub struct Function {
-    pub code: AST,
+    pub code: Ast,
     pub address: Option<Address>,
     pub symbols: HashMap<String, Loadable>,
 }
@@ -135,7 +135,7 @@ fn move_all(parameters: Vec<Load>) -> Vec<Executable> {
     parameters
         .into_iter()
         .zip(sys_v_calling_convention())
-        .map(|(mut src, dest)| {
+        .flat_map(|(mut src, dest)| {
             let mut vec = src.code_pre;
             vec.push(Executable::MoveLoad {
                 src: src.returns,
@@ -144,7 +144,6 @@ fn move_all(parameters: Vec<Load>) -> Vec<Executable> {
             vec.append(&mut src.code_post);
             vec
         })
-        .flatten()
         .collect()
 }
 
@@ -169,7 +168,7 @@ fn load(expression: &Expression, program_context: &mut Program) -> Result<Load> 
         Expression::FunctionCall {
             function_name,
             arguments,
-        } => build_function(&function_name, arguments, program_context)?,
+        } => build_function(function_name, arguments, program_context)?,
         _ => todo!(),
     };
 
@@ -216,7 +215,7 @@ fn resolve_standalone_expression(
             function_name,
             arguments: args,
         } => {
-            let mut load = build_function(&function_name, args, program_context)?;
+            let mut load = build_function(function_name, args, program_context)?;
             let mut vec = load.code_pre;
             vec.append(&mut load.code_post);
             Ok(vec)
@@ -226,8 +225,8 @@ fn resolve_standalone_expression(
             right_side,
             operator: _,
         } => {
-            let mut vec = resolve_standalone_expression(&left_side, program_context)?;
-            let mut rhs = resolve_standalone_expression(&right_side, program_context)?;
+            let mut vec = resolve_standalone_expression(left_side, program_context)?;
+            let mut rhs = resolve_standalone_expression(right_side, program_context)?;
             vec.append(&mut rhs);
             Ok(vec)
         }
@@ -481,9 +480,9 @@ impl ModRM {
 }
 
 impl Function {
-    fn dummy(text: &Vec<u8>) -> Self {
+    fn dummy(text: &[u8]) -> Self {
         Function {
-            code: AST {
+            code: Ast {
                 statements: Vec::new(),
             },
             address: Some(text.len() as u64),
@@ -550,7 +549,7 @@ impl Function {
             debug!("Generated high level assembly: {executable:?}");
             program_context
                 .text
-                .write_all(&mut program_context.as_binary(&executable))
+                .write_all(&program_context.as_binary(&executable))
                 .unwrap();
         }
 

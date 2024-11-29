@@ -16,7 +16,7 @@ pub enum Token {
     Ident(String),
     Let,
     Semi,
-    EOF,
+    Eof,
 }
 
 impl Display for Token {
@@ -34,13 +34,13 @@ impl Display for Token {
             Token::Let => write!(f, "the `let` keyword"),
             Token::Int(x) => write!(f, "an integer ({x})"),
             Token::Ident(x) => write!(f, "an identifier (\"{x}\")"),
-            Token::EOF => write!(f, "the end of the file"),
+            Token::Eof => write!(f, "the end of the file"),
         }
     }
 }
 
 fn is_digit(c: &char) -> bool {
-    c.is_digit(10)
+    c.is_ascii_digit()
 }
 
 fn is_normal_character(c: &char) -> bool {
@@ -75,7 +75,7 @@ where
 {
     fn peek(&mut self) -> Option<<Self as Iterator>::Item> {
         while let Some(peek) = self.0.peek() {
-            let peek = peek.clone();
+            let peek = *peek;
             if is_legal(&peek) {
                 return Some(peek);
             }
@@ -140,7 +140,7 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>> {
         tokens.push(token);
     }
 
-    tokens.push(Token::EOF);
+    tokens.push(Token::Eof);
 
     Ok(tokens)
 }

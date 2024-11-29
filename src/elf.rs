@@ -69,8 +69,7 @@ impl Program {
         let as_vec_u8 = |slice: &[&str]| {
             slice
                 .iter()
-                .map(|x| x.as_bytes().to_vec())
-                .flatten()
+                .flat_map(|x| x.as_bytes().to_vec())
                 .collect::<Vec<u8>>()
         };
 
