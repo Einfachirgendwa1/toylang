@@ -7,14 +7,6 @@ use log::{debug, warn};
 
 type Address = u64;
 
-impl Program {
-    fn write_all(&mut self, binary: &[u8]) {
-        self.text
-            .write_all(binary)
-            .expect("Failed to write to buffer.")
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub enum Register {
     Rax,

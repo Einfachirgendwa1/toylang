@@ -21,14 +21,6 @@ fn align_vector(vec: &mut Vec<u8>, alignment: u64) -> u64 {
     vec.len() as u64
 }
 
-fn align_program_header_offset(p_vaddr: u64, offset: u64) -> Aligned {
-    let required = (PAGE_SIZE + (p_vaddr % PAGE_SIZE) - (offset % PAGE_SIZE)) % PAGE_SIZE;
-    Aligned {
-        required_padding: required,
-        padding: vec![0; required as usize],
-    }
-}
-
 fn growing_subslice<'a, T, A, F>(vec: &'a [T], f: F) -> impl FnMut() -> A + 'a
 where
     T: 'a,
