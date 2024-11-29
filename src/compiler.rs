@@ -158,7 +158,9 @@ fn load(expression: &Expression, program_context: &mut Program) -> Result<Load> 
                 .with_context(|| format!("Variable {name} doesn't exist!"))?
                 .clone()
             else {
-                do yeet eyre!("Expected symbol {name} to be a variable, but it's not.");
+                return Err(eyre!(
+                    "Expected symbol {name} to be a variable, but it's not."
+                ));
             };
 
             todo!()
@@ -184,7 +186,7 @@ fn build_function(
         .get_mut(name)
         .wrap_err_with(|| format!("Function {name} doesn't exist."))?
     else {
-        do yeet eyre!("{name} is not a function.");
+        return Err(eyre!("{name} is not a function."));
     };
 
     let relative = function.get_relative_jump(&mut program_context.text)?;

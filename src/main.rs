@@ -1,5 +1,4 @@
 #![allow(dead_code)]
-#![feature(yeet_expr)]
 
 mod compiler;
 mod elf;

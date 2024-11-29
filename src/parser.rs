@@ -118,7 +118,7 @@ impl TryFrom<Token> for Operator {
             Token::Sub => Ok(Operator::Sub),
             Token::Mul => Ok(Operator::Mul),
             Token::Div => Ok(Operator::Div),
-            x => do yeet eyre!("Cannot convert {x} into an operator."),
+            x => return Err(eyre!("Cannot convert {x} into an operator.")),
         }
     }
 }
@@ -139,9 +139,9 @@ pub fn remaining_expression_parsing(
             {
                 Statement::Expression { value } => value,
                 x => {
-                    do yeet eyre!(
+                    return Err(eyre!(
                         "Exprected right side of expression to be an expression, found {x}"
-                    )
+                    ))
                 }
             };
 
@@ -168,7 +168,7 @@ pub fn find_closing_brace(tokens: &mut dyn Iterator<Item = Token>) -> Result<Vec
     loop {
         let mut depth = 1;
         match tokens.next() {
-            None => do yeet eyre!("Parenthesis was never closed."),
+            None => return Err(eyre!("Parenthesis was never closed.")),
             Some(Token::LParen) => depth += 1,
             Some(Token::RParen) => depth -= 1,
             Some(x) => tokens_in_parens.push(x),
@@ -193,28 +193,30 @@ pub fn get_next_statement<'a>(
         Token::Let => {
             let variable_name = match tokens.next().unwrap() {
                 Token::Ident(ident) => ident,
-                x => do yeet eyre!("Expected identifier after let, found {x}"),
+                x => return Err(eyre!("Expected identifier after let, found {x}")),
             };
 
             match tokens.next().unwrap() {
                 Token::Equal => (),
                 x => {
-                    do yeet eyre!("Exprected equal sign (=) after `let {variable_name}`, found {x}")
+                    return Err(eyre!(
+                        "Exprected equal sign (=) after `let {variable_name}`, found {x}"
+                    ))
                 }
             }
 
             let value = match get_next_statement(tokens) {
-                Err(err) => Err(err).wrap_err_with(|| format!("Failed to get ... in `let {variable_name} = ...`") )?,
-                Ok(None) => {
-                    do yeet eyre!(
+                Err(err) => Err(err).wrap_err_with(|| {
+                    format!("Failed to get ... in `let {variable_name} = ...`")
+                })?,
+                Ok(None) => return Err(eyre!(
                     "Expected an expression to follow after `let {variable_name} = `, but got nothing."
-                )
-                }
+                )),
                 Ok(Some(Statement::Expression { value })) => value,
                 Ok(Some(x)) => {
-                    do yeet eyre!(
-                        "Expected an expression to follow after `let {variable_name} = `, but got {x}."
-                    )
+                    return Err(eyre!(
+                    "Expected an expression to follow after `let {variable_name} = `, but got {x}."
+                ))
                 }
             };
 
@@ -229,15 +231,15 @@ pub fn get_next_statement<'a>(
             Err(err) => {
                 Err(err).wrap_err_with(|| format!("Failed to get the value after the `+`"))?
             }
-            Ok(None) => do yeet eyre!("Unexpected `+` with nothing after it."),
+            Ok(None) => return Err(eyre!("Unexpected `+` with nothing after it.")),
             Ok(Some(Statement::Expression { value })) => Statement::Expression { value },
-            Ok(Some(y)) => do yeet eyre!("Expected Expression after `+`, got {y}"),
+            Ok(Some(y)) => return Err(eyre!("Expected Expression after `+`, got {y}")),
         },
         Token::Sub => match get_next_statement(tokens) {
             Err(err) => {
                 Err(err).wrap_err_with(|| format!("Failed to get the value after the `-`"))?
             }
-            Ok(None) => do yeet eyre!("Unexpected `-` with nothing after it."),
+            Ok(None) => return Err(eyre!("Unexpected `-` with nothing after it.")),
             Ok(Some(Statement::Expression { value })) => Statement::Expression {
                 value: Expression::MathematicalOperation {
                     left_side: Box::new(value),
@@ -245,7 +247,7 @@ pub fn get_next_statement<'a>(
                     operator: Operator::Mul,
                 },
             },
-            Ok(Some(y)) => do yeet eyre!("Expected Expression after `-`, got {y}"),
+            Ok(Some(y)) => return Err(eyre!("Expected Expression after `-`, got {y}")),
         },
 
         Token::LParen => Statement::CodeBlock {
@@ -257,14 +259,14 @@ pub fn get_next_statement<'a>(
         },
 
         x @ (Token::Mul | Token::Div | Token::Equal | Token::RParen | Token::Comma) => {
-            do yeet eyre!("Detected junk: `{x}`")
+            return Err(eyre!("Detected junk: `{x}`"))
         }
 
         Token::EOF => return Ok(None),
 
         Token::Int(value) => {
             remaining_expression_parsing(Expression::LiteralInt { value }, tokens, |token, _| {
-                do yeet eyre!("Expression followed by invalid token: {token}")
+                return Err(eyre!("Expression followed by invalid token: {token}"));
             })
             .wrap_err_with(|| format!("Failed to parse the tokens after the integer {value}"))?
         }
@@ -295,14 +297,14 @@ pub fn get_next_statement<'a>(
                     {
                             let ast = item?;
                             match ast.statements.len() {
-                                0 => do yeet eyre!("Found to commas without an expression between them in function call {ident}."),
+                                0 => return Err( eyre!("Found to commas without an expression between them in function call {ident}.")),
                                 1 => {
                                     let Statement::Expression { ref value } = ast.statements[0] else {
-                                        do yeet eyre!("Function parameters have to be statements, but one call of {ident} passes: {}", ast.statements[0])
+                                        return Err( eyre!("Function parameters have to be statements, but one call of {ident} passes: {}", ast.statements[0]))
                                     };
                                     args.push(value.clone());
                                 }
-                                2.. => do yeet eyre!("Found multiple statements not sperated by a comma in function call {ident}."),
+                                2.. => return Err( eyre!("Found multiple statements not sperated by a comma in function call {ident}.")),
                             }
                     }
                     Ok(Statement::Expression {
@@ -312,7 +314,7 @@ pub fn get_next_statement<'a>(
                         },
                     })
                 }
-                x => do yeet eyre!("Invalid token after identifier {ident}: {x}"),
+                x => return Err( eyre!("Invalid token after identifier {ident}: {x}")),
             },
         )
         .wrap_err_with(|| format!("Failed to parse the expression starting with {ident_clone}"))?
