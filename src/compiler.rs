@@ -90,6 +90,7 @@ pub struct Function {
 pub struct Program {
     pub symbols: HashMap<String, Symbol>,
     pub text: Vec<u8>,
+    pub text_entry_offset: usize,
     pub data: Vec<u8>,
 }
 
@@ -98,6 +99,7 @@ impl Program {
         Program {
             symbols: HashMap::new(),
             text: Vec::new(),
+            text_entry_offset: 0,
             data: b"test".to_vec(),
         }
     }
