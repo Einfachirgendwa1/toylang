@@ -10,6 +10,12 @@ pub struct Ast {
     pub statements: Vec<Statement>,
 }
 
+#[derive(Debug, Clone)]
+pub enum Code {
+    Ast(Ast),
+    Binary(Vec<u8>),
+}
+
 #[derive(Clone, Debug)]
 pub enum Statement {
     FunctionDefinition {

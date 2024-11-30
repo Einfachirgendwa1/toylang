@@ -75,7 +75,7 @@ fn main() -> Result<()> {
 
     // Compile
     let mut main = Function {
-        code: ast,
+        code: Code::Ast(ast),
         address: None,
         symbols: HashMap::new(),
     };

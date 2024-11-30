@@ -1,4 +1,4 @@
-use crate::{Ast, Expression, Impossible, Statement};
+use crate::{Code, Expression, Impossible, Statement};
 
 use std::{collections::HashMap, io::Write, iter::repeat};
 
@@ -81,7 +81,7 @@ pub enum Symbol {
 
 #[derive(Clone, Debug)]
 pub struct Function {
-    pub code: Ast,
+    pub code: Code,
     pub address: Option<Address>,
     pub symbols: HashMap<String, Loadable>,
 }
@@ -242,10 +242,8 @@ impl Program {
         self.binary_function(self.as_binary(executable))
     }
 
-    fn binary_function(&mut self, mut binary: Vec<u8>) -> Function {
-        let function = Function::dummy(&self.text);
-        self.text.append(&mut binary);
-        function
+    fn binary_function(&mut self, binary: Vec<u8>) -> Function {
+        Function::dummy(Code::Binary(binary))
     }
 
     fn load_onto_stack(&self, loadable: &Loadable) -> Vec<u8> {
@@ -474,12 +472,10 @@ impl ModRM {
 }
 
 impl Function {
-    fn dummy(text: &[u8]) -> Self {
+    fn dummy(code: Code) -> Self {
         Function {
-            code: Ast {
-                statements: Vec::new(),
-            },
-            address: Some(text.len() as u64),
+            code,
+            address: None,
             symbols: HashMap::new(),
         }
     }
@@ -506,9 +502,14 @@ impl Function {
         let mut program_context = Program::new();
         let mut functions_within = HashMap::new();
 
+        let ast = match &self.code {
+            Code::Ast(ast) => ast,
+            Code::Binary(binary) => return Ok(binary.clone()),
+        };
+
         basic_functions(&mut program_context)?;
 
-        let mut statements = self.code.statements.clone();
+        let mut statements = ast.statements.clone();
         statements.push(Statement::Expression {
             value: Expression::FunctionCall {
                 function_name: "exit".to_string(),
@@ -524,7 +525,7 @@ impl Function {
             } = statement
             {
                 let function = Function {
-                    code: code.clone(),
+                    code: Code::Ast(code.clone()),
                     address: None,
                     symbols: load_all(parameters.clone()),
                 };
