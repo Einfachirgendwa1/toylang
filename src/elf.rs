@@ -55,7 +55,7 @@ pub fn generate_elf(mut text: Vec<u8>, mut data: Vec<u8>) -> Vec<u8> {
             .collect::<Vec<u8>>()
     };
 
-    let sections = [".text\0", ".data\0", ".shstrtab\0"];
+    let sections = ["\0", ".text\0", ".data\0", ".shstrtab\0"];
     let mut sections_bin = as_vec_u8(&sections);
     let mut next_section = growing_subslice(&sections, |slice| as_vec_u8(slice).len() as u32);
 
@@ -66,7 +66,7 @@ pub fn generate_elf(mut text: Vec<u8>, mut data: Vec<u8>) -> Vec<u8> {
     let elf_program_header_size = size_of::<Elf64ProgramHeader>() as u64;
     let elf_section_header_size = size_of::<Elf64SectionHeader>() as u64;
 
-    let headers = elf_header_size + 2 * elf_program_header_size + 3 * elf_section_header_size;
+    let headers = elf_header_size + 2 * elf_program_header_size + 4 * elf_section_header_size;
     let mut header_padding = align(headers, PAGE_SIZE);
     let header_len = headers + header_padding.required_padding;
 
@@ -83,8 +83,8 @@ pub fn generate_elf(mut text: Vec<u8>, mut data: Vec<u8>) -> Vec<u8> {
         e_phentsize: elf_program_header_size as u16,
         e_phnum: 2,
         e_shentsize: elf_section_header_size as u16,
-        e_shnum: 3,
-        e_shstrndx: 2,
+        e_shnum: 4,
+        e_shstrndx: 3,
     };
 
     let text_program_header = Elf64ProgramHeader {
@@ -111,6 +111,19 @@ pub fn generate_elf(mut text: Vec<u8>, mut data: Vec<u8>) -> Vec<u8> {
         p_align: PAGE_SIZE,
     };
     data_program_header.assert_valid();
+
+    let null_section_header = Elf64SectionHeader {
+        sh_name: next_section(),
+        sh_type: 0,
+        sh_flags: 0,
+        sh_addr: 0,
+        sh_offset: 0,
+        sh_size: 0,
+        sh_link: 0,
+        sh_info: 0,
+        sh_addralign: 0,
+        sh_entsize: 0,
+    };
 
     let text_section_header = Elf64SectionHeader {
         sh_name: next_section(),
@@ -152,6 +165,8 @@ pub fn generate_elf(mut text: Vec<u8>, mut data: Vec<u8>) -> Vec<u8> {
     extend(&mut vec, elf_header);
     extend(&mut vec, text_program_header);
     extend(&mut vec, data_program_header);
+
+    extend(&mut vec, null_section_header);
     extend(&mut vec, text_section_header);
     extend(&mut vec, data_section_header);
     extend(&mut vec, strings_section_header);
