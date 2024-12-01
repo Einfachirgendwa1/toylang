@@ -1,11 +1,9 @@
-use crate::{Code, Expression, Impossible, Statement};
+use crate::{elf::generate_elf, link, Ast, Code, Expression, Statement};
 
-use std::{collections::HashMap, io::Write, iter::repeat};
+use std::{collections::HashMap, iter::repeat};
 
 use eyre::{eyre, ContextCompat, Result, WrapErr};
 use log::{debug, warn};
-
-type Address = u64;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Register {
@@ -59,8 +57,8 @@ impl Load {
 enum Executable {
     Push(Register),
     Pop(Register),
-    Call(i32),
     MoveLoad { src: Loadable, dest: Loadable },
+    Call { label: String },
     Syscall,
     Ret,
 }
@@ -68,7 +66,7 @@ enum Executable {
 #[derive(Clone, Debug)]
 pub enum Loadable {
     Register(Register),
-    Work(Vec<u8>, Box<Loadable>),
+    Work(Vec<UnlinkedTextSectionElement>, Box<Loadable>),
     Immediate(i64),
     Stack,
 }
@@ -76,22 +74,33 @@ pub enum Loadable {
 #[derive(Clone, Debug)]
 pub enum Symbol {
     Variable(Expression),
-    Function(Function),
+    Function { function: Function, written: bool },
 }
 
 #[derive(Clone, Debug)]
 pub struct Function {
+    pub ident: String,
     pub code: Code,
-    pub address: Option<Address>,
     pub symbols: HashMap<String, Loadable>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Program {
     pub symbols: HashMap<String, Symbol>,
-    pub text: Vec<u8>,
-    pub text_entry_offset: usize,
+    pub text: Vec<Label>,
     pub data: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Label {
+    pub ident: String,
+    pub code: Vec<UnlinkedTextSectionElement>,
+}
+
+#[derive(Clone, Debug)]
+pub enum UnlinkedTextSectionElement {
+    Binary(Vec<u8>),
+    Call { function_name: String },
 }
 
 impl Program {
@@ -99,7 +108,6 @@ impl Program {
         Program {
             symbols: HashMap::new(),
             text: Vec::new(),
-            text_entry_offset: 0,
             data: b"test".to_vec(),
         }
     }
@@ -174,24 +182,31 @@ fn build_function(
     args: &Vec<Expression>,
     program_context: &mut Program,
 ) -> Result<Load> {
-    let Symbol::Function(function) = program_context
+    let Symbol::Function { function, written } = program_context
         .symbols
-        .get_mut(name)
+        .get(name)
         .wrap_err_with(|| format!("Function {name} doesn't exist."))?
     else {
         return Err(eyre!("{name} is not a function."));
     };
+    let function = function.clone();
+    let written = *written;
 
-    let relative = function.get_relative_jump(&mut program_context.text)?;
+    let mut compiler_result = function.compile(program_context)?;
+    if !written {
+        program_context.text.append(&mut compiler_result);
+    }
 
     let mut loads = Vec::new();
-    for arg in args {
-        loads.push(load(arg, program_context).wrap_err("In function parameter.")?);
+    for element in args.iter().map(|arg| load(arg, program_context)) {
+        loads.push(element.wrap_err("In function parameter.")?)
     }
 
     let mut code_pre = move_all(loads);
     code_pre.push(Executable::Push(Register::Rax));
-    code_pre.push(Executable::Call(relative));
+    code_pre.push(Executable::Call {
+        label: name.to_string(),
+    });
 
     Ok(Load {
         code_pre,
@@ -209,6 +224,7 @@ fn resolve_standalone_expression(
             function_name,
             arguments: args,
         } => {
+            println!("Fn Call for {function_name}");
             let mut load = build_function(function_name, args, program_context)?;
             let mut vec = load.code_pre;
             vec.append(&mut load.code_post);
@@ -238,15 +254,15 @@ const fn extended(register: &Register) -> bool {
 
 // Source for the assembly: https://www.felixcloutier.com/x86
 impl Program {
-    fn assembly_function(&mut self, executable: &Vec<Executable>) -> Function {
-        self.binary_function(self.as_binary(executable))
+    fn assembly_function(&mut self, name: &str, executable: &Vec<Executable>) -> Function {
+        self.binary_function(name, self.as_binary(executable))
     }
 
-    fn binary_function(&mut self, binary: Vec<u8>) -> Function {
-        Function::dummy(Code::Binary(binary))
+    fn binary_function(&mut self, name: &str, binary: Vec<UnlinkedTextSectionElement>) -> Function {
+        Function::new(name.to_string(), Code::Binary(binary))
     }
 
-    fn load_onto_stack(&self, loadable: &Loadable) -> Vec<u8> {
+    fn load_onto_stack(&self, loadable: &Loadable) -> Vec<UnlinkedTextSectionElement> {
         match loadable {
             Loadable::Stack => Vec::new(),
             Loadable::Register(x) => self.one_as_binary(&Executable::Push(*x)),
@@ -265,17 +281,21 @@ impl Program {
         }
     }
 
-    fn load_into_register(&self, loadable: &Loadable, dest: &Register) -> Vec<u8> {
+    fn load_into_register(
+        &self,
+        loadable: &Loadable,
+        dest: &Register,
+    ) -> Vec<UnlinkedTextSectionElement> {
         match loadable {
             Loadable::Stack => self.one_as_binary(&Executable::Pop(*dest)),
             Loadable::Register(src) => {
                 // MOV r64, r/m64
                 // REX.W + 8B /r
-                vec![
+                vec![UnlinkedTextSectionElement::Binary(vec![
                     Rex::registers_64(src, dest),
                     0x8B,
                     ModRM::register(dest, src),
-                ]
+                ])]
             }
             Loadable::Work(first, then) => {
                 let mut vec = first.clone();
@@ -288,18 +308,18 @@ impl Program {
             Loadable::Immediate(x) => {
                 // MOV r64, imm64
                 // REX.W, B8 + rd, io
-                let mut vec = vec![
+                let mut vec = vec![UnlinkedTextSectionElement::Binary(vec![
                     Rex::byte(true, extended(dest), false, false),
                     0xB8 + dest.byte(),
-                ];
-                vec.extend_from_slice(&x.to_le_bytes());
+                ])];
+                vec.push(UnlinkedTextSectionElement::Binary(x.to_le_bytes().to_vec()));
                 vec
             }
         }
     }
 
-    fn one_as_binary(&self, executable: &Executable) -> Vec<u8> {
-        match executable {
+    fn one_as_binary(&self, executable: &Executable) -> Vec<UnlinkedTextSectionElement> {
+        let bin = match executable {
             // PUSH r64
             // 50 + rd
             Executable::Push(register) => match extended(register) {
@@ -319,14 +339,18 @@ impl Program {
                 (_, Loadable::Work(_, _)) => {
                     panic!("Cannot load into work.")
                 }
-                (loadable, Loadable::Stack) => self.load_onto_stack(loadable),
-                (loadable, Loadable::Register(dest)) => self.load_into_register(loadable, dest),
+                (loadable, Loadable::Stack) => return self.load_onto_stack(loadable),
+                (loadable, Loadable::Register(dest)) => {
+                    return self.load_into_register(loadable, dest)
+                }
             },
             // CALL rel32
-            Executable::Call(relative_offset) => vec![0xE8]
-                .into_iter()
-                .chain(relative_offset.to_le_bytes())
-                .collect(),
+            Executable::Call { label } => {
+                return vec![UnlinkedTextSectionElement::Call {
+                    function_name: label.clone(),
+                }]
+            }
+
             // SYSCALL
             // 0F 05
             Executable::Syscall => {
@@ -337,60 +361,69 @@ impl Program {
             Executable::Ret => {
                 vec![0xC3]
             }
-        }
+        };
+        vec![UnlinkedTextSectionElement::Binary(bin)]
     }
 
-    fn as_binary(&self, executable: &Vec<Executable>) -> Vec<u8> {
-        let mut binary = Vec::new();
-        for executable in executable {
-            binary.append(&mut self.one_as_binary(executable));
-        }
-        binary
+    fn as_binary(&self, executable: &Vec<Executable>) -> Vec<UnlinkedTextSectionElement> {
+        executable
+            .into_iter()
+            .flat_map(|executable| self.one_as_binary(executable))
+            .collect()
     }
 }
 
 fn basic_functions(program_context: &mut Program) -> Result<()> {
-    let putchar = program_context.assembly_function(&vec![
-        Executable::MoveLoad {
-            src: Loadable::Register(Register::Rdi),
-            dest: Loadable::Register(Register::Rsi),
-        },
-        Executable::MoveLoad {
-            src: Loadable::Immediate(1),
-            dest: Loadable::Register(Register::Rax),
-        },
-        Executable::MoveLoad {
-            src: Loadable::Immediate(1),
-            dest: Loadable::Register(Register::Rdi),
-        },
-        Executable::MoveLoad {
-            src: Loadable::Immediate(1),
-            dest: Loadable::Register(Register::Rdx),
-        },
-        Executable::Syscall,
-        Executable::Ret,
-    ]);
+    let functions = [
+        program_context.assembly_function(
+            "putchar",
+            &vec![
+                Executable::MoveLoad {
+                    src: Loadable::Register(Register::Rdi),
+                    dest: Loadable::Register(Register::Rsi),
+                },
+                Executable::MoveLoad {
+                    src: Loadable::Immediate(1),
+                    dest: Loadable::Register(Register::Rax),
+                },
+                Executable::MoveLoad {
+                    src: Loadable::Immediate(1),
+                    dest: Loadable::Register(Register::Rdi),
+                },
+                Executable::MoveLoad {
+                    src: Loadable::Immediate(1),
+                    dest: Loadable::Register(Register::Rdx),
+                },
+                Executable::Syscall,
+                Executable::Ret,
+            ],
+        ),
+        program_context.assembly_function(
+            "exit",
+            &vec![
+                Executable::MoveLoad {
+                    src: Loadable::Immediate(60),
+                    dest: Loadable::Register(Register::Rax),
+                },
+                Executable::MoveLoad {
+                    src: Loadable::Immediate(0),
+                    dest: Loadable::Register(Register::Rdi),
+                },
+                Executable::Syscall,
+                Executable::Ret,
+            ],
+        ),
+    ];
 
-    let exit = program_context.assembly_function(&vec![
-        Executable::MoveLoad {
-            src: Loadable::Immediate(60),
-            dest: Loadable::Register(Register::Rax),
-        },
-        Executable::MoveLoad {
-            src: Loadable::Immediate(0),
-            dest: Loadable::Register(Register::Rdi),
-        },
-        Executable::Syscall,
-        Executable::Ret,
-    ]);
-
-    program_context
-        .symbols
-        .insert("putchar".to_string(), Symbol::Function(putchar));
-
-    program_context
-        .symbols
-        .insert("exit".to_string(), Symbol::Function(exit));
+    for function in functions {
+        program_context.symbols.insert(
+            function.ident.clone(),
+            Symbol::Function {
+                function,
+                written: false,
+            },
+        );
+    }
 
     Ok(())
 }
@@ -471,53 +504,53 @@ impl ModRM {
     }
 }
 
+pub fn compile_main(mut ast: Ast) -> Result<Vec<u8>> {
+    ast.statements.push(Statement::Expression {
+        value: Expression::FunctionCall {
+            function_name: "exit".to_string(),
+            arguments: vec![],
+        },
+    });
+
+    let main = Function {
+        ident: "main".to_string(),
+        code: Code::Ast(ast),
+        symbols: HashMap::new(),
+    };
+
+    let mut program_context = Program::new();
+    basic_functions(&mut program_context)?;
+
+    let compiled = main.compile(&mut program_context)?;
+    Ok(generate_elf(
+        link(compiled).wrap_err("Linker failed.")?,
+        Vec::new(),
+    ))
+}
+
 impl Function {
-    fn dummy(code: Code) -> Self {
+    fn new(ident: String, code: Code) -> Self {
         Function {
+            ident,
             code,
-            address: None,
             symbols: HashMap::new(),
         }
     }
 
-    fn get_relative_jump(&mut self, text: &mut Vec<u8>) -> Result<i32> {
-        let address = match self.address {
-            Some(address) => address,
-            None => {
-                self.write(text).wrap_err("Failed to create self.")?;
-                self.address.impossible().unwrap()
-            }
-        };
-
-        Ok(text.len() as i32 - address as i32 + 5)
-    }
-
-    pub fn write(&mut self, program: &mut Vec<u8>) -> Result<()> {
-        self.address = Some(program.len() as u64);
-        program.write_all(&self.compile()?).unwrap();
-        Ok(())
-    }
-
-    fn compile(&self) -> Result<Vec<u8>> {
-        let mut program_context = Program::new();
+    pub fn compile(&self, program_context: &mut Program) -> Result<Vec<Label>> {
         let mut functions_within = HashMap::new();
 
         let ast = match &self.code {
             Code::Ast(ast) => ast,
-            Code::Binary(binary) => return Ok(binary.clone()),
+            Code::Binary(binary) => {
+                return Ok(vec![Label {
+                    ident: self.ident.clone(),
+                    code: binary.clone(),
+                }])
+            }
         };
 
-        basic_functions(&mut program_context)?;
-
-        let mut statements = ast.statements.clone();
-        statements.push(Statement::Expression {
-            value: Expression::FunctionCall {
-                function_name: "exit".to_string(),
-                arguments: vec![],
-            },
-        });
-
-        for statement in &statements {
+        for statement in &ast.statements {
             if let Statement::FunctionDefinition {
                 function_name,
                 parameters,
@@ -526,28 +559,28 @@ impl Function {
             {
                 let function = Function {
                     code: Code::Ast(code.clone()),
-                    address: None,
+                    ident: function_name.clone(),
                     symbols: load_all(parameters.clone()),
                 };
                 functions_within.insert(function_name.clone(), function);
             }
         }
 
-        for statement in statements {
+        for statement in &ast.statements {
             let executable = match statement {
                 Statement::Expression { value } => {
-                    resolve_standalone_expression(&value, &mut program_context)
+                    resolve_standalone_expression(&value, program_context)
                         .wrap_err("Failed to resolve standalone expression.")?
                 }
                 _ => todo!(),
             };
             debug!("Generated high level assembly: {executable:?}");
-            program_context
-                .text
-                .write_all(&program_context.as_binary(&executable))
-                .unwrap();
+            program_context.text.push(Label {
+                ident: self.ident.clone(),
+                code: program_context.as_binary(&executable),
+            })
         }
 
-        Ok(program_context.text)
+        Ok(program_context.text.clone())
     }
 }

@@ -1,5 +1,6 @@
 use crate::Impossible;
 use crate::Token;
+use crate::UnlinkedTextSectionElement;
 
 use std::fmt::Display;
 
@@ -13,7 +14,7 @@ pub struct Ast {
 #[derive(Debug, Clone)]
 pub enum Code {
     Ast(Ast),
-    Binary(Vec<u8>),
+    Binary(Vec<UnlinkedTextSectionElement>),
 }
 
 #[derive(Clone, Debug)]

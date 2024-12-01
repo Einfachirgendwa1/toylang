@@ -1,16 +1,17 @@
 mod compiler;
 mod elf;
 mod lexer;
+mod linker;
 mod misc;
 mod parser;
 
 use compiler::*;
 use lexer::*;
+use linker::*;
 use misc::*;
 use parser::*;
 
 use std::{
-    collections::HashMap,
     fs::{metadata, set_permissions, File},
     io::{Read, Write},
     os::unix::fs::PermissionsExt,
@@ -65,24 +66,13 @@ fn main() -> Result<()> {
         .read_to_string(&mut content)
         .wrap_err_with(|| format!("Failed to read from `{input}`."))?;
 
-    // Tokenize
     let tokens = tokenize(&content).wrap_err("Failed to tokenize.")?;
     debug!("Tokenizer Output: {tokens:?}");
 
-    // Parse
     let ast = parse(tokens).wrap_err("Failed to parse.")?;
     debug!("Parser Output: {ast:?}");
 
-    // Compile
-    let mut main = Function {
-        code: Code::Ast(ast),
-        address: None,
-        symbols: HashMap::new(),
-    };
-    let mut program = Program::new();
-    main.write(&mut program.text)?;
-    debug!("Compiler output: {program:?}");
-    let elf = program.generate_elf();
+    let elf = compile_main(ast).wrap_err("Failed to compile.")?;
 
     File::create(&output).unwrap().write_all(&elf).unwrap();
     let mut permissions = metadata(&output).unwrap().permissions();
