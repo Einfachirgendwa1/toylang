@@ -203,7 +203,6 @@ fn build_function(
     }
 
     let mut code_pre = move_all(loads);
-    code_pre.push(Executable::Push(Register::Rax));
     code_pre.push(Executable::Call {
         label: name.to_string(),
     });
@@ -211,7 +210,7 @@ fn build_function(
     Ok(Load {
         code_pre,
         returns: Loadable::Register(Register::Rax),
-        code_post: vec![Executable::Pop(Register::Rax)],
+        code_post: vec![],
     })
 }
 
@@ -224,7 +223,6 @@ fn resolve_standalone_expression(
             function_name,
             arguments: args,
         } => {
-            println!("Fn Call for {function_name}");
             let mut load = build_function(function_name, args, program_context)?;
             let mut vec = load.code_pre;
             vec.append(&mut load.code_post);
