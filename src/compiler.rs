@@ -380,7 +380,7 @@ fn basic_functions(program_context: &mut Program) -> Result<()> {
             &vec![
                 Executable::MoveLoad {
                     src: Loadable::Register(Register::Rdi),
-                    dest: Loadable::Register(Register::Rsi),
+                    dest: Loadable::Stack,
                 },
                 Executable::MoveLoad {
                     src: Loadable::Immediate(1),
@@ -391,10 +391,15 @@ fn basic_functions(program_context: &mut Program) -> Result<()> {
                     dest: Loadable::Register(Register::Rdi),
                 },
                 Executable::MoveLoad {
+                    src: Loadable::Register(Register::Rsp),
+                    dest: Loadable::Register(Register::Rsi),
+                },
+                Executable::MoveLoad {
                     src: Loadable::Immediate(1),
                     dest: Loadable::Register(Register::Rdx),
                 },
                 Executable::Syscall,
+                Executable::Pop(Register::Rax),
                 Executable::Ret,
             ],
         ),
