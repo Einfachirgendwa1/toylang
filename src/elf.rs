@@ -26,7 +26,7 @@ fn align_vector(vec: &mut Vec<u8>, alignment: u64) -> u64 {
     vec.len() as u64
 }
 
-pub fn extend<A: Clone, B>(vec: &mut Vec<A>, b: B) {
+fn extend<A: Clone, B>(vec: &mut Vec<A>, b: B) {
     unsafe {
         vec.extend_from_slice(slice::from_raw_parts(
             &b as *const B as *const A,
