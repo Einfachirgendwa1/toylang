@@ -29,44 +29,94 @@ pub fn extend<A: Clone, B>(vec: &mut Vec<A>, b: B) {
     }
 }
 
-fn as_vec_u8(slice: &[&str]) -> Vec<u8> {
-    slice.iter().flat_map(|x| x.as_bytes().to_vec()).collect()
+struct SH {
+    sh_type: u32,
+    sh_flags: u64,
+    sh_link: u32,
+    sh_entsize: u64,
+    content: Option<Vec<u8>>,
+}
+
+impl SH {
+    fn no_content(sh_type: u32, sh_flags: u64) -> SH {
+        SH {
+            sh_type,
+            sh_flags,
+            sh_link: 0,
+            content: None,
+            sh_entsize: 0,
+        }
+    }
+
+    fn no_table(sh_type: u32, sh_flags: u64, content: Vec<u8>) -> SH {
+        SH {
+            sh_type,
+            sh_flags,
+            sh_link: 0,
+            content: Some(content),
+            sh_entsize: 0,
+        }
+    }
+
+    fn table<T>(sh_type: u32, sh_flags: u64, content: Vec<u8>) -> SH {
+        SH {
+            sh_type,
+            sh_flags,
+            sh_link: 0,
+            content: Some(content),
+            sh_entsize: size_of::<T>() as u64,
+        }
+    }
+}
+
+struct PH {
+    p_type: u32,
+    p_flags: u32,
+    content: Vec<u8>,
 }
 
 #[derive(Default)]
 struct ElfGenerator {
-    sections: Vec<(&'static str, u32, u64, Option<Vec<u8>>)>,
-    loaders: Vec<(u32, u32, Vec<u8>)>,
+    names: Vec<&'static str>,
+    sections: Vec<SH>,
+    loaders: Vec<PH>,
 }
 
 impl ElfGenerator {
-    fn section(&mut self, name: &'static str, sh_type: u32, sh_flags: u64) {
-        self.sections.push((name, sh_type, sh_flags, None));
-    }
-
-    fn section_with_content(
-        &mut self,
-        name: &'static str,
-        sh_type: u32,
-        sh_flags: u64,
-        content: Vec<u8>,
-    ) {
-        self.sections.push((name, sh_type, sh_flags, Some(content)));
+    fn section(&mut self, name: &'static str, sh: SH) {
+        self.sections.push(sh);
+        self.names.push(name);
     }
 
     fn load(&mut self, p_type: u32, p_flags: u32, content: Vec<u8>) {
-        self.loaders.push((p_type, p_flags, content));
+        self.loaders.push(PH {
+            p_type,
+            p_flags,
+            content,
+        });
     }
 
-    fn generate(self) -> Vec<u8> {
+    fn generate_shstrtab(&mut self) -> usize {
+        let mut names = self.names.clone();
+
+        names.push(".shstrtab");
+
+        let names: Vec<u8> = names
+            .into_iter()
+            .flat_map(|name| name.as_bytes().to_vec())
+            .collect();
+
+        let len = self.names.len();
+        self.section(".shstrtab", SH::no_table(3, 0, names));
+
+        len
+    }
+
+    fn generate(mut self) -> Vec<u8> {
         let mut res = Vec::new();
         let mut file_content = Vec::new();
 
-        let names: Vec<u32> = self
-            .sections
-            .iter()
-            .map(|(a, _, _, _)| a.len() as u32)
-            .collect();
+        let e_shstrndx = self.generate_shstrtab() as u16;
 
         let mut header_size = (size_of::<Elf64Header>()
             + self.loaders.len() * size_of::<Elf64ProgramHeader>()
@@ -93,18 +143,18 @@ impl ElfGenerator {
             e_phnum: self.loaders.len() as u16,
             e_shentsize: size_of::<Elf64SectionHeader>() as u16,
             e_shnum: self.sections.len() as u16,
-            e_shstrndx: self
-                .sections
-                .iter()
-                .enumerate()
-                .find_map(|(index, (x, _, _, _))| (*x == ".shstrtab\0").then(|| index as u16))
-                .unwrap(),
+            e_shstrndx,
         };
 
         extend(&mut res, elf_header);
 
         let mut n = 0;
-        for (p_type, p_flags, mut content) in self.loaders {
+        for PH {
+            p_type,
+            p_flags,
+            mut content,
+        } in self.loaders
+        {
             let content_len = align_vector(&mut content, ALIGNMENT);
 
             let addr = n + 0x400000;
@@ -123,9 +173,18 @@ impl ElfGenerator {
             extend(&mut res, program_header);
         }
 
+        let name_bytes: Vec<u32> = self.names.iter().map(|name| name.len() as u32).collect();
+
         let mut n = 0;
-        for (_, sh_type, sh_flags, content) in self.sections {
-            let sh_name = names[..n].iter().sum();
+        for SH {
+            sh_type,
+            sh_flags,
+            sh_entsize,
+            content,
+            sh_link,
+        } in self.sections
+        {
+            let sh_name = name_bytes[..n].iter().sum();
             n += 1;
 
             let mut sh_addr = 0;
@@ -146,10 +205,10 @@ impl ElfGenerator {
                 sh_flags,
                 sh_addr,
                 sh_offset,
-                sh_link: 0,
+                sh_link,
                 sh_size,
                 sh_info: 0,
-                sh_entsize: 0,
+                sh_entsize,
                 sh_addralign: ALIGNMENT,
             };
 
@@ -163,18 +222,21 @@ impl ElfGenerator {
     }
 }
 
-pub fn generate_elf(text: Vec<u8>, data: Vec<u8>) -> Vec<u8> {
-    let sections = ["\0", ".text\0", ".data\0", ".shstrtab\0"];
-
+pub fn generate_elf(text: Vec<u8>, data: Vec<u8>, symtab: Vec<u8>, strtab: Vec<u8>) -> Vec<u8> {
     let mut elf_generator = ElfGenerator::default();
+
+    let mut symtab = SH::table::<Elf64Sym>(2, 0, symtab);
+    // FIXME: i dont care
+    symtab.sh_link = 4;
 
     elf_generator.load(1, 1 | 4, text.clone());
     elf_generator.load(1, 2 | 4, data.clone());
 
-    elf_generator.section("\0", 0, 0);
-    elf_generator.section_with_content(".text\0", 1, 2 | 4, text);
-    elf_generator.section_with_content(".data\0", 1, 1 | 2, data);
-    elf_generator.section_with_content(".shstrtab\0", 3, 0, as_vec_u8(&sections));
+    elf_generator.section("\0", SH::no_content(0, 0));
+    elf_generator.section(".text\0", SH::no_table(1, 2 | 4, text));
+    elf_generator.section(".data\0", SH::no_table(1, 1 | 2, data));
+    elf_generator.section(".symtab\0", symtab);
+    elf_generator.section(".strtab\0", SH::no_table(3, 0, strtab));
 
     elf_generator.generate()
 }
@@ -222,4 +284,14 @@ struct Elf64SectionHeader {
     sh_info: u32,
     sh_addralign: u64,
     sh_entsize: u64,
+}
+
+#[repr(C)]
+struct Elf64Sym {
+    st_name: u32,
+    st_info: u8,
+    st_other: u8,
+    st_shndx: u16,
+    st_value: u64,
+    st_size: u64,
 }

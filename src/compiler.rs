@@ -525,10 +525,13 @@ pub fn compile_main(mut ast: Ast) -> Result<Vec<u8>> {
     basic_functions(&mut program_context)?;
 
     let compiled = main.compile(&mut program_context)?;
-    Ok(generate_elf(
+    let elf = generate_elf(
         link(compiled).wrap_err("Linker failed.")?,
         Vec::new(),
-    ))
+        Vec::new(),
+        Vec::new(),
+    );
+    Ok(elf)
 }
 
 impl Function {
