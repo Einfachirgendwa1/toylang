@@ -1,3 +1,4 @@
+use crate::{Elf64Sym, LinkerOutput};
 use std::slice;
 
 const ALIGNMENT: u64 = 0x1000;
@@ -39,6 +40,7 @@ struct SH {
     sh_type: u32,
     sh_flags: u64,
     sh_link: u32,
+    sh_info: u32,
     sh_entsize: u64,
     content: Option<Vec<u8>>,
 }
@@ -50,6 +52,7 @@ impl SH {
             sh_flags,
             sh_link: 0,
             content: None,
+            sh_info: 0,
             sh_entsize: 0,
         }
     }
@@ -59,6 +62,7 @@ impl SH {
             sh_type,
             sh_flags,
             sh_link: 0,
+            sh_info: 0,
             content: Some(content),
             sh_entsize: 0,
         }
@@ -69,6 +73,7 @@ impl SH {
             sh_type,
             sh_flags,
             sh_link: 0,
+            sh_info: 0,
             content: Some(content),
             sh_entsize: size_of::<T>() as u64,
         }
@@ -195,6 +200,7 @@ impl ElfGenerator {
             sh_entsize,
             content,
             sh_link,
+            sh_info,
         } in self.sections
         {
             let sh_name = name_bytes[..n].iter().sum();
@@ -205,7 +211,7 @@ impl ElfGenerator {
             let mut sh_size = 0;
 
             if let Some(mut content) = content {
-                if sh_flags & 2 == 1 {
+                if sh_flags & 2 == 2 {
                     align_vector(&mut content, ALIGNMENT);
                 }
 
@@ -224,7 +230,7 @@ impl ElfGenerator {
                 sh_offset,
                 sh_link,
                 sh_size,
-                sh_info: 0,
+                sh_info,
                 sh_entsize,
                 sh_addralign: ALIGNMENT,
             };
@@ -239,7 +245,14 @@ impl ElfGenerator {
     }
 }
 
-pub fn generate_elf(text: Vec<u8>, data: Vec<u8>, symtab: Vec<u8>, strtab: Vec<u8>) -> Vec<u8> {
+pub fn generate_elf(
+    LinkerOutput {
+        code: text,
+        symtab,
+        strtab,
+    }: LinkerOutput,
+    data: Vec<u8>,
+) -> Vec<u8> {
     let mut elf_generator = ElfGenerator::default();
 
     elf_generator.load(1, 1 | 4, text.clone());
@@ -248,10 +261,27 @@ pub fn generate_elf(text: Vec<u8>, data: Vec<u8>, symtab: Vec<u8>, strtab: Vec<u
     elf_generator.section("\0", SH::no_content(0, 0));
     elf_generator.section(".text\0", SH::no_table(1, 2 | 4, text));
     elf_generator.section(".data\0", SH::no_table(1, 1 | 2, data));
-    elf_generator.section(".strtab\0", SH::no_table(3, 0, strtab));
 
-    let mut symtab = SH::table::<Elf64Sym>(2, 0, symtab);
+    let strtab_content = strtab
+        .into_iter()
+        .flat_map(|mut string: String| {
+            println!("{string}");
+            string.push('\0');
+            string.as_bytes().to_vec()
+        })
+        .collect();
+
+    elf_generator.section(".strtab\0", SH::no_table(3, 0, strtab_content));
+
+    let mut symtab_content = Vec::new();
+    for symbol in symtab {
+        extend(&mut symtab_content, symbol);
+    }
+
+    let sh_info = symtab_content.len() as u32;
+    let mut symtab = SH::table::<Elf64Sym>(2, 0, symtab_content);
     symtab.sh_link = elf_generator.find_section_by_name(".strtab\0").unwrap() as u32;
+    symtab.sh_info = sh_info;
 
     elf_generator.section(".symtab\0", symtab);
 
@@ -301,14 +331,4 @@ struct Elf64SectionHeader {
     sh_info: u32,
     sh_addralign: u64,
     sh_entsize: u64,
-}
-
-#[repr(C)]
-struct Elf64Sym {
-    st_name: u32,
-    st_info: u8,
-    st_other: u8,
-    st_shndx: u16,
-    st_value: u64,
-    st_size: u64,
 }

@@ -5,7 +5,13 @@ use crate::{Impossible, Label, UnlinkedTextSectionElement};
 use eyre::Result;
 use log::debug;
 
-pub fn link(code: Vec<Label>) -> Result<Vec<u8>> {
+pub struct LinkerOutput {
+    pub code: Vec<u8>,
+    pub symtab: Vec<Elf64Sym>,
+    pub strtab: Vec<String>,
+}
+
+pub fn link(code: Vec<Label>) -> Result<LinkerOutput> {
     let mut res = Vec::new();
     let mut code = VecDeque::from(code);
 
@@ -47,15 +53,32 @@ pub fn link(code: Vec<Label>) -> Result<Vec<u8>> {
         for code in &label.code {
             match code {
                 UnlinkedTextSectionElement::Binary(binary) => position += binary.len(),
-                UnlinkedTextSectionElement::Call { function_name: _ } => position += 5,
+                UnlinkedTextSectionElement::Call { .. } => position += 5,
             }
         }
     }
 
+    let mut symtab = Vec::new();
+    let mut strtab = Vec::new();
     let mut result = Vec::new();
-    for label in code {
-        for code in label.code {
-            match code {
+
+    let mut st_name = 0;
+
+    for Label { ident, code } in code {
+        st_name += ident.len() as u32;
+        strtab.push(ident);
+        let symbol = Elf64Sym {
+            st_name,
+            st_info: 1,
+            st_value: result.len() as u64,
+            st_shndx: 1,
+            st_other: 0,
+            st_size: 0,
+        };
+        symtab.push(symbol);
+
+        for element in code {
+            match element {
                 UnlinkedTextSectionElement::Binary(mut binary) => result.append(&mut binary),
                 UnlinkedTextSectionElement::Call { ref function_name } => {
                     let Some(address) = function_map.get(function_name) else {
@@ -70,5 +93,20 @@ pub fn link(code: Vec<Label>) -> Result<Vec<u8>> {
         }
     }
 
+    let result = LinkerOutput {
+        code: result,
+        symtab,
+        strtab,
+    };
     Ok(result)
+}
+
+#[repr(C)]
+pub struct Elf64Sym {
+    pub st_name: u32,
+    pub st_info: u8,
+    pub st_other: u8,
+    pub st_shndx: u16,
+    pub st_value: u64,
+    pub st_size: u64,
 }
