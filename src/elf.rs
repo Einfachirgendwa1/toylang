@@ -112,6 +112,13 @@ impl ElfGenerator {
         len
     }
 
+    fn find_section_by_name(&self, section_name: &'static str) -> Option<usize> {
+        self.names
+            .iter()
+            .enumerate()
+            .find_map(|(index, name)| (*name == section_name).then(|| index))
+    }
+
     fn generate(mut self) -> Vec<u8> {
         let mut res = Vec::new();
         let mut file_content = Vec::new();
@@ -225,18 +232,18 @@ impl ElfGenerator {
 pub fn generate_elf(text: Vec<u8>, data: Vec<u8>, symtab: Vec<u8>, strtab: Vec<u8>) -> Vec<u8> {
     let mut elf_generator = ElfGenerator::default();
 
-    let mut symtab = SH::table::<Elf64Sym>(2, 0, symtab);
-    // FIXME: i dont care
-    symtab.sh_link = 4;
-
     elf_generator.load(1, 1 | 4, text.clone());
     elf_generator.load(1, 2 | 4, data.clone());
 
     elf_generator.section("\0", SH::no_content(0, 0));
     elf_generator.section(".text\0", SH::no_table(1, 2 | 4, text));
     elf_generator.section(".data\0", SH::no_table(1, 1 | 2, data));
-    elf_generator.section(".symtab\0", symtab);
     elf_generator.section(".strtab\0", SH::no_table(3, 0, strtab));
+
+    let mut symtab = SH::table::<Elf64Sym>(2, 0, symtab);
+    symtab.sh_link = elf_generator.find_section_by_name(".strtab\0").unwrap() as u32;
+
+    elf_generator.section(".symtab\0", symtab);
 
     elf_generator.generate()
 }
