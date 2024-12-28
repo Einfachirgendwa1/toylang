@@ -86,14 +86,19 @@ impl ElfGenerator {
             e_version: 1,
             e_entry: 0x400000,
             e_phoff: elf_header_size,
-            e_shoff: elf_header_size + 2 * elf_program_header_size,
+            e_shoff: elf_header_size + self.loaders.len() as u64 * elf_program_header_size,
             e_flags: 0,
             e_ehsize: elf_header_size as u16,
             e_phentsize: elf_program_header_size as u16,
-            e_phnum: 2,
+            e_phnum: self.loaders.len() as u16,
             e_shentsize: size_of::<Elf64SectionHeader>() as u16,
-            e_shnum: 4,
-            e_shstrndx: 3,
+            e_shnum: self.sections.len() as u16,
+            e_shstrndx: self
+                .sections
+                .iter()
+                .enumerate()
+                .find_map(|(index, (x, _, _, _))| (*x == ".shstrtab\0").then(|| index as u16))
+                .unwrap(),
         };
 
         extend(&mut res, elf_header);
