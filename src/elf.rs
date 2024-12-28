@@ -8,6 +8,12 @@ struct Aligned {
 }
 
 fn align(number: u64, alignment: u64) -> Aligned {
+    if number % alignment == 0 {
+        return Aligned {
+            required_padding: 0,
+            padding: Vec::new(),
+        };
+    }
     let required_padding = alignment - number % alignment;
     Aligned {
         required_padding,
@@ -199,6 +205,10 @@ impl ElfGenerator {
             let mut sh_size = 0;
 
             if let Some(mut content) = content {
+                if sh_flags & 2 == 1 {
+                    align_vector(&mut content, ALIGNMENT);
+                }
+
                 sh_addr = 0x400000 + file_content.len() as u64;
                 sh_offset = header_size + file_content.len() as u64;
                 sh_size = content.len() as u64;
