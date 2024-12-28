@@ -1,7 +1,8 @@
 use crate::{Elf64Sym, LinkerOutput};
 use std::slice;
 
-const ALIGNMENT: u64 = 0x1000;
+const LOAD_ALIGNMENT: u64 = 0x1000;
+const BULLSHIT_ALIGNMENT: u64 = 4;
 
 struct Aligned {
     required_padding: u64,
@@ -141,7 +142,7 @@ impl ElfGenerator {
             + self.sections.len() * size_of::<Elf64SectionHeader>())
             as u64;
 
-        let mut header_padding = align(header_size, ALIGNMENT);
+        let mut header_padding = align(header_size, LOAD_ALIGNMENT);
         header_size += header_padding.required_padding;
 
         let elf_header_size = size_of::<Elf64Header>() as u64;
@@ -173,7 +174,7 @@ impl ElfGenerator {
             mut content,
         } in self.loaders
         {
-            let content_len = align_vector(&mut content, ALIGNMENT);
+            let content_len = align_vector(&mut content, LOAD_ALIGNMENT);
 
             let addr = n + 0x400000;
             let program_header = Elf64ProgramHeader {
@@ -184,7 +185,7 @@ impl ElfGenerator {
                 p_paddr: addr,
                 p_filesz: content_len,
                 p_memsz: content_len,
-                p_align: ALIGNMENT,
+                p_align: LOAD_ALIGNMENT,
             };
             n += content_len;
 
@@ -207,16 +208,18 @@ impl ElfGenerator {
             n += 1;
 
             let mut sh_addr = 0;
-            let mut sh_offset = 0;
+            let sh_offset = header_size + file_content.len() as u64;
             let mut sh_size = 0;
+
+            let mut sh_addralign = BULLSHIT_ALIGNMENT;
 
             if let Some(mut content) = content {
                 if sh_flags & 2 == 2 {
-                    align_vector(&mut content, ALIGNMENT);
+                    sh_addralign = LOAD_ALIGNMENT;
+                    sh_addr = 0x400000 + file_content.len() as u64;
                 }
+                align_vector(&mut content, sh_addralign);
 
-                sh_addr = 0x400000 + file_content.len() as u64;
-                sh_offset = header_size + file_content.len() as u64;
                 sh_size = content.len() as u64;
 
                 file_content.append(&mut content);
@@ -232,7 +235,7 @@ impl ElfGenerator {
                 sh_size,
                 sh_info,
                 sh_entsize,
-                sh_addralign: ALIGNMENT,
+                sh_addralign,
             };
 
             extend(&mut res, section_header);

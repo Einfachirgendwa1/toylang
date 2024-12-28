@@ -65,7 +65,7 @@ pub fn link(code: Vec<Label>) -> Result<LinkerOutput> {
     let mut st_name = 0;
 
     for Label { ident, code } in code {
-        st_name += ident.len() as u32;
+        let len = ident.len() as u32;
         strtab.push(ident);
         let symbol = Elf64Sym {
             st_name,
@@ -76,6 +76,7 @@ pub fn link(code: Vec<Label>) -> Result<LinkerOutput> {
             st_size: 0,
         };
         symtab.push(symbol);
+        st_name += len + 1;
 
         for element in code {
             match element {
