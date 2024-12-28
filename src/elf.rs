@@ -33,28 +33,48 @@ fn as_vec_u8(slice: &[&str]) -> Vec<u8> {
     slice.iter().flat_map(|x| x.as_bytes().to_vec()).collect()
 }
 
-struct ElfBuilder<const N: usize> {
-    section_indezes: [u32; N],
-    pp_count: usize,
-    rp_count: usize,
-    loader_n: usize,
-    n: usize,
-    header_size: u64,
-    header_padding: Vec<u8>,
-    headers: Vec<u8>,
-    content: Vec<u8>,
+#[derive(Default)]
+struct ElfGenerator {
+    sections: Vec<(&'static str, u32, u64, Option<Vec<u8>>)>,
+    loaders: Vec<(u32, u32, Vec<u8>)>,
 }
 
-impl<const N: usize> ElfBuilder<N> {
-    fn new(sections: [&'static str; N], program_headers: usize) -> Self {
-        let mut header_size = (size_of::<Elf64Header>()
-            + program_headers * size_of::<Elf64ProgramHeader>()
-            + sections.len() * size_of::<Elf64SectionHeader>())
-            as u64;
-        let header_padding = align(header_size, ALIGNMENT);
-        header_size += header_padding.required_padding;
+impl ElfGenerator {
+    fn section(&mut self, name: &'static str, sh_type: u32, sh_flags: u64) {
+        self.sections.push((name, sh_type, sh_flags, None));
+    }
 
-        let mut headers = Vec::new();
+    fn section_with_content(
+        &mut self,
+        name: &'static str,
+        sh_type: u32,
+        sh_flags: u64,
+        content: Vec<u8>,
+    ) {
+        self.sections.push((name, sh_type, sh_flags, Some(content)));
+    }
+
+    fn load(&mut self, p_type: u32, p_flags: u32, content: Vec<u8>) {
+        self.loaders.push((p_type, p_flags, content));
+    }
+
+    fn generate(self) -> Vec<u8> {
+        let mut res = Vec::new();
+        let mut file_content = Vec::new();
+
+        let names: Vec<u32> = self
+            .sections
+            .iter()
+            .map(|(a, _, _, _)| a.len() as u32)
+            .collect();
+
+        let mut header_size = (size_of::<Elf64Header>()
+            + self.loaders.len() * size_of::<Elf64ProgramHeader>()
+            + self.sections.len() * size_of::<Elf64SectionHeader>())
+            as u64;
+
+        let mut header_padding = align(header_size, ALIGNMENT);
+        header_size += header_padding.required_padding;
 
         let elf_header_size = size_of::<Elf64Header>() as u64;
         let elf_program_header_size = size_of::<Elf64ProgramHeader>() as u64;
@@ -76,108 +96,82 @@ impl<const N: usize> ElfBuilder<N> {
             e_shstrndx: 3,
         };
 
-        extend(&mut headers, elf_header);
+        extend(&mut res, elf_header);
 
-        Self {
-            pp_count: program_headers,
-            rp_count: 0,
-            header_padding: header_padding.padding,
-            section_indezes: sections.map(|section| section.len() as u32),
-            n: 0,
-            loader_n: 0,
-            header_size,
-            headers,
-            content: Vec::new(),
+        let mut n = 0;
+        for (p_type, p_flags, mut content) in self.loaders {
+            let content_len = align_vector(&mut content, ALIGNMENT);
+
+            let addr = n + 0x400000;
+            let program_header = Elf64ProgramHeader {
+                p_type,
+                p_flags,
+                p_offset: header_size + n as u64,
+                p_vaddr: addr,
+                p_paddr: addr,
+                p_filesz: content_len,
+                p_memsz: content_len,
+                p_align: ALIGNMENT,
+            };
+            n += content_len;
+
+            extend(&mut res, program_header);
         }
-    }
 
-    fn add_p(&mut self, p_type: u32, p_flags: u32, data: &mut Vec<u8>) {
-        let data_len = align_vector(data, ALIGNMENT);
-        self.rp_count += 1;
+        let mut n = 0;
+        for (_, sh_type, sh_flags, content) in self.sections {
+            let sh_name = names[..n].iter().sum();
+            n += 1;
 
-        let addr = self.loader_n as u64 + 0x400000;
-        let program_header = Elf64ProgramHeader {
-            p_type,
-            p_flags,
-            p_offset: self.header_size + self.loader_n as u64,
-            p_vaddr: addr,
-            p_paddr: addr,
-            p_filesz: data_len,
-            p_memsz: data_len,
-            p_align: ALIGNMENT,
-        };
+            let mut sh_addr = 0;
+            let mut sh_offset = 0;
+            let mut sh_size = 0;
 
-        self.loader_n += data_len as usize;
+            if let Some(mut content) = content {
+                sh_addr = 0x400000 + file_content.len() as u64;
+                sh_offset = header_size + file_content.len() as u64;
+                sh_size = content.len() as u64;
 
-        extend(&mut self.headers, program_header);
-    }
+                file_content.append(&mut content);
+            }
 
-    fn add_sh(&mut self, sh_flags: u64, sh_type: u32) {
-        let sh_name = self.section_indezes[..self.n].iter().sum();
-        self.n += 1;
+            let section_header = Elf64SectionHeader {
+                sh_name,
+                sh_type,
+                sh_flags,
+                sh_addr,
+                sh_offset,
+                sh_link: 0,
+                sh_size,
+                sh_info: 0,
+                sh_entsize: 0,
+                sh_addralign: ALIGNMENT,
+            };
 
-        let section_header = Elf64SectionHeader {
-            sh_name,
-            sh_type,
-            sh_flags,
-            sh_addr: 0,
-            sh_offset: 0,
-            sh_link: 0,
-            sh_size: 0,
-            sh_info: 0,
-            sh_entsize: 0,
-            sh_addralign: ALIGNMENT,
-        };
+            extend(&mut res, section_header);
+        }
 
-        extend(&mut self.headers, section_header);
-    }
+        res.append(&mut header_padding.padding);
+        res.append(&mut file_content);
 
-    fn add_sh_with_content(&mut self, sh_type: u32, sh_flags: u64, mut content: Vec<u8>) {
-        let sh_name = self.section_indezes[..self.n].iter().sum();
-        self.n += 1;
-
-        let section_header = Elf64SectionHeader {
-            sh_name,
-            sh_type,
-            sh_flags,
-            sh_addr: 0x400000 + self.content.len() as u64,
-            sh_offset: self.header_size + self.content.len() as u64,
-            sh_link: 0,
-            sh_size: content.len() as u64,
-            sh_info: 0,
-            sh_entsize: 0,
-            sh_addralign: ALIGNMENT,
-        };
-
-        extend(&mut self.headers, section_header);
-        self.content.append(&mut content);
-    }
-
-    fn finish(mut self) -> Vec<u8> {
-        debug_assert_eq!(self.rp_count, self.pp_count);
-        debug_assert_eq!(self.n, N);
-
-        let mut res = self.headers;
-        res.append(&mut self.header_padding);
-        res.append(&mut self.content);
         res
     }
 }
 
-pub fn generate_elf(mut text: Vec<u8>, mut data: Vec<u8>) -> Vec<u8> {
+pub fn generate_elf(text: Vec<u8>, data: Vec<u8>) -> Vec<u8> {
     let sections = ["\0", ".text\0", ".data\0", ".shstrtab\0"];
 
-    let mut elf_builder = ElfBuilder::new(sections, 2);
+    let mut elf_generator = ElfGenerator::default();
 
-    elf_builder.add_p(1, 1 | 4, &mut text);
-    elf_builder.add_p(1, 2 | 4, &mut data);
+    elf_generator.load(1, 1 | 4, text.clone());
+    elf_generator.load(1, 2 | 4, data.clone());
 
-    elf_builder.add_sh(0, 0);
-    elf_builder.add_sh_with_content(1, 2 | 4, text);
-    elf_builder.add_sh_with_content(1, 1 | 2, data);
-    elf_builder.add_sh_with_content(3, 0, as_vec_u8(&sections));
+    elf_generator.section("\0", 0, 0);
+    elf_generator.section_with_content(".text\0", 1, 2 | 4, text);
+    elf_generator.section_with_content(".data\0", 1, 1 | 2, data);
+    elf_generator.section_with_content(".shstrtab\0", 3, 0, as_vec_u8(&sections));
 
-    elf_builder.finish()
+    elf_generator.generate()
 }
 
 #[repr(C)]
