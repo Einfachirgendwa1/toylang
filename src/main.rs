@@ -15,6 +15,7 @@ use std::{
     fs::{metadata, set_permissions, File},
     io::{Read, Write},
     os::unix::fs::PermissionsExt,
+    time::Instant,
 };
 
 use clap::Parser;
@@ -96,6 +97,8 @@ fn main() -> Result<()> {
 
     info!("{input} --- tlc ---> {output}");
 
+    let start = Instant::now();
+
     let mut input_file =
         File::open(&input).wrap_err_with(|| format!("Failed to open `{input}`."))?;
 
@@ -116,5 +119,9 @@ fn main() -> Result<()> {
     let mut permissions = metadata(&output).unwrap().permissions();
     permissions.set_mode(permissions.mode() | 0o111);
     set_permissions(output, permissions).unwrap();
+
+    let diff = Instant::now().duration_since(start);
+    info!("Finished successfully within {diff:?}.");
+
     Ok(())
 }
