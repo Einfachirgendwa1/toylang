@@ -130,14 +130,14 @@ impl Elf64Sym {
     }
 
     fn label(st_name: u32, st_value: u64) -> Elf64Sym {
-        dbg!(Elf64Sym {
+        Elf64Sym {
             st_name,
             st_info: 0,
             st_value: st_value + 0x400000,
             st_shndx: 1,
             st_other: 0,
             st_size: 0,
-        })
+        }
     }
 
     fn global_label(st_name: u32, st_value: u64) -> Elf64Sym {

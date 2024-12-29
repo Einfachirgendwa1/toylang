@@ -220,7 +220,7 @@ impl ElfGenerator {
                 }
                 align_vector(&mut content, sh_addralign);
 
-                sh_size = dbg!(content.len()) as u64;
+                sh_size = content.len() as u64;
 
                 file_content.append(&mut content);
             }
