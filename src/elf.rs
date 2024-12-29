@@ -220,7 +220,7 @@ impl ElfGenerator {
                 }
                 align_vector(&mut content, sh_addralign);
 
-                sh_size = content.len() as u64;
+                sh_size = dbg!(content.len()) as u64;
 
                 file_content.append(&mut content);
             }
@@ -253,6 +253,7 @@ pub fn generate_elf(
         code: text,
         symtab,
         strtab,
+        symtab_sh_info,
     }: LinkerOutput,
     data: Vec<u8>,
 ) -> Vec<u8> {
@@ -267,11 +268,7 @@ pub fn generate_elf(
 
     let strtab_content = strtab
         .into_iter()
-        .flat_map(|mut string: String| {
-            println!("{string}");
-            string.push('\0');
-            string.as_bytes().to_vec()
-        })
+        .flat_map(|string| string.as_bytes().to_vec())
         .collect();
 
     elf_generator.section(".strtab\0", SH::no_table(3, 0, strtab_content));
@@ -280,11 +277,11 @@ pub fn generate_elf(
     for symbol in symtab {
         extend(&mut symtab_content, symbol);
     }
+    align_vector(&mut symtab_content, BULLSHIT_ALIGNMENT);
 
-    let sh_info = symtab_content.len() as u32;
     let mut symtab = SH::table::<Elf64Sym>(2, 0, symtab_content);
     symtab.sh_link = elf_generator.find_section_by_name(".strtab\0").unwrap() as u32;
-    symtab.sh_info = sh_info;
+    symtab.sh_info = symtab_sh_info;
 
     elf_generator.section(".symtab\0", symtab);
 
