@@ -18,11 +18,11 @@ use std::{
     time::Instant,
 };
 
+use cascade::cascade;
 use clap::Parser;
 use colored::Colorize;
 use eyre::{Context, Result};
-use log::{debug, info, warn};
-use log::{set_logger, set_max_level, Level, LevelFilter, Log, SetLoggerError};
+use log::{debug, info, set_logger, set_max_level, warn, Level, LevelFilter, Log, SetLoggerError};
 
 #[derive(Parser)]
 struct Cli {

@@ -52,6 +52,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "cascade"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d499b43edbf784dd81e16f0395f5b4350a35b477da8a074251087adefc11cb52"
+
+[[package]]
 name = "clap"
 version = "4.5.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -192,6 +198,7 @@ dependencies = [
 name = "toylang"
 version = "0.1.0"
 dependencies = [
+ "cascade",
  "clap",
  "colored",
  "eyre",
