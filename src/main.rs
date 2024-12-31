@@ -18,7 +18,6 @@ use std::{
     time::Instant,
 };
 
-use cascade::cascade;
 use clap::Parser;
 use colored::Colorize;
 use eyre::{Context, Result};

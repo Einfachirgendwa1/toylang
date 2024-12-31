@@ -184,16 +184,17 @@ fn build_function(
 ) -> Result<Load> {
     let Symbol::Function { function, written } = program_context
         .symbols
-        .get(name)
+        .get_mut(name)
         .wrap_err_with(|| format!("Function {name} doesn't exist."))?
     else {
         return Err(eyre!("{name} is not a function."));
     };
     let function = function.clone();
-    let written = *written;
+    let already_written = *written;
+    *written = true;
 
-    let mut compiler_result = function.compile(program_context)?;
-    if !written {
+    if !already_written {
+        let mut compiler_result = function.compile(program_context)?;
         program_context.text.append(&mut compiler_result);
     }
 
