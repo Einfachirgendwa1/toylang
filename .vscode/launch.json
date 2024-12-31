@@ -1,0 +1,17 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "codelldb",
+      "request": "launch",
+      "name": "Debug main.tl",
+      "program": "${workspaceFolder}/target/debug/toylang",
+      "args": ["main.tl"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "RUST_LOG": "debug"
+      },
+      "stopOnEntry": false
+    }
+  ]
+}
