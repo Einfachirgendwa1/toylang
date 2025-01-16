@@ -3,6 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use crate::{Impossible, Label, UnlinkedTextSectionElement};
 
 use eyre::Result;
+use log::debug;
 
 pub struct LinkerOutput {
     pub code: Vec<u8>,
@@ -36,13 +37,21 @@ pub fn link(code: Vec<Label>) -> Result<LinkerOutput> {
         })
         .collect();
 
-    let main = code.remove(
+    debug!("Linker input: {code:?}");
+
+    let start = code.remove(
         code.iter()
-            .position(|label| label.ident.as_str() == "main")
+            .position(|label| label.ident.as_str() == "_start")
             .impossible()?,
     );
 
-    code.insert(0, main);
+    code.iter_mut()
+        .find(|x| x.ident == "main")
+        .impossible()?
+        .code
+        .push(UnlinkedTextSectionElement::Binary(vec![0xC3]));
+
+    code.insert(0, start);
 
     let mut function_map = HashMap::new();
 
@@ -85,7 +94,7 @@ pub fn link(code: Vec<Label>) -> Result<LinkerOutput> {
                     };
                     result.push(0xE8);
                     let result_address = *address as i32 - result.len() as i32 - 4;
-                    result.extend_from_slice(&mut result_address.to_le_bytes());
+                    result.extend_from_slice(&result_address.to_le_bytes());
                 }
             }
         }

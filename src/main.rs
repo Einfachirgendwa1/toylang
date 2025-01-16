@@ -21,7 +21,7 @@ use std::{
 use clap::Parser;
 use colored::Colorize;
 use eyre::{Context, Result};
-use log::{debug, info, set_logger, set_max_level, warn, Level, LevelFilter, Log, SetLoggerError};
+use log::{info, set_logger, set_max_level, warn, Level, LevelFilter, Log, SetLoggerError};
 
 #[derive(Parser)]
 struct Cli {
@@ -107,11 +107,7 @@ fn main() -> Result<()> {
         .wrap_err_with(|| format!("Failed to read from `{input}`."))?;
 
     let tokens = tokenize(&content).wrap_err("Failed to tokenize.")?;
-    debug!("Tokenizer Output: {tokens:?}");
-
     let ast = parse(tokens).wrap_err("Failed to parse.")?;
-    debug!("Parser Output: {ast:?}");
-
     let elf = compile_main(ast).wrap_err("Failed to compile.")?;
 
     File::create(&output).unwrap().write_all(&elf).unwrap();

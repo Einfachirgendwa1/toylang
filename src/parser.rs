@@ -201,13 +201,11 @@ pub fn get_next_statement(tokens: &mut impl Iterator<Item = Token>) -> Result<Op
                 x => return Err(eyre!("Expected identifier after let, found {x}")),
             };
 
-            match tokens.next().unwrap() {
-                Token::Equal => (),
-                x => {
-                    return Err(eyre!(
-                        "Exprected equal sign (=) after `let {variable_name}`, found {x}"
-                    ))
-                }
+            let next_token = tokens.next().unwrap();
+            if next_token != Token::Equal {
+                return Err(eyre!(
+                    "Exprected equal sign (=) after `let {variable_name}`, found {next_token}"
+                ));
             }
 
             let value = match get_next_statement(tokens) {
@@ -228,6 +226,61 @@ pub fn get_next_statement(tokens: &mut impl Iterator<Item = Token>) -> Result<Op
             Statement::VariableAssignment {
                 variable_name,
                 value,
+            }
+        }
+
+        Token::Fn => {
+            let function_name = match tokens.next().unwrap() {
+                Token::Ident(ident) => ident,
+                x => return Err(eyre!("Expected identifier after let, found {x}")),
+            };
+
+            let next_token = tokens.next().unwrap();
+            if next_token != Token::LParen {
+                return Err(eyre!(
+                    "Expected '(' after identifier in function definition, found {next_token}"
+                ));
+            }
+
+            let mut parameters = Vec::new();
+            loop {
+                match tokens.next().unwrap() {
+                    Token::RParen => break,
+                    Token::Ident(next_token) => parameters.push(next_token),
+                    other => return Err(eyre!("Invalid Token in function parameters: {other}")),
+                };
+
+                match tokens.next().unwrap() {
+                    Token::Comma => continue,
+                    Token::RParen => break,
+                    token => {
+                        return Err(eyre!(
+                            "Invalid Token after function parameter identifier: {token}"
+                        ));
+                    }
+                };
+            }
+
+            let code = match get_next_statement(tokens) {
+                Ok(Some(Statement::CodeBlock { ast })) => ast,
+                Ok(Some(statement)) => Ast {
+                    statements: vec![statement],
+                },
+
+                Ok(None) => {
+                    return Err(eyre!(
+                        "Expected code block for function {function_name}, got nothing."
+                    ))
+                }
+                Err(err) => Err(err).wrap_err(format!(
+                    "Failed to parse code block for function `{function_name}`"
+                ))?,
+            };
+
+            Statement::FunctionDefinition {
+                function_name,
+                parameters,
+                code,
             }
         }
 
@@ -255,7 +308,7 @@ pub fn get_next_statement(tokens: &mut impl Iterator<Item = Token>) -> Result<Op
             Ok(Some(y)) => return Err(eyre!("Expected Expression after `-`, got {y}")),
         },
 
-        Token::LParen => Statement::CodeBlock {
+        Token::LParen | Token::LCurly => Statement::CodeBlock {
             ast: parse(
                 find_closing_brace(tokens)
                     .wrap_err("Failed to parse tokens within a single opening parenthesis")?,
@@ -263,9 +316,12 @@ pub fn get_next_statement(tokens: &mut impl Iterator<Item = Token>) -> Result<Op
             .wrap_err("Failed to parse tokens in parenthesis.")?,
         },
 
-        x @ (Token::Mul | Token::Div | Token::Equal | Token::RParen | Token::Comma) => {
-            return Err(eyre!("Detected junk: `{x}`"))
-        }
+        x @ (Token::Mul
+        | Token::Div
+        | Token::Equal
+        | Token::RParen
+        | Token::RCurly
+        | Token::Comma) => return Err(eyre!("Detected junk: `{x}`")),
 
         Token::Eof => return Ok(None),
 

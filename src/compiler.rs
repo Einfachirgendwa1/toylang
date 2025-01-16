@@ -1,9 +1,9 @@
-use crate::{elf::generate_elf, link, Ast, Code, Expression, Statement};
+use crate::{elf::generate_elf, link, Ast, Code, Expression, Impossible, Statement};
 
 use std::{collections::HashMap, iter::repeat};
 
 use eyre::{eyre, ContextCompat, Result, WrapErr};
-use log::{debug, warn};
+use log::warn;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Register {
@@ -177,26 +177,8 @@ fn load(expression: &Expression, program_context: &mut Program) -> Result<Load> 
     Ok(load)
 }
 
-fn build_function(
-    name: &str,
-    args: &Vec<Expression>,
-    program_context: &mut Program,
-) -> Result<Load> {
-    let Symbol::Function { function, written } = program_context
-        .symbols
-        .get_mut(name)
-        .wrap_err_with(|| format!("Function {name} doesn't exist."))?
-    else {
-        return Err(eyre!("{name} is not a function."));
-    };
-    let function = function.clone();
-    let already_written = *written;
-    *written = true;
-
-    if !already_written {
-        let mut compiler_result = function.compile(program_context)?;
-        program_context.text.append(&mut compiler_result);
-    }
+fn build_function(name: &str, args: &[Expression], program_context: &mut Program) -> Result<Load> {
+    program_context.write_function(name)?;
 
     let mut loads = Vec::new();
     for element in args.iter().map(|arg| load(arg, program_context)) {
@@ -253,7 +235,29 @@ const fn extended(register: &Register) -> bool {
 
 // Source for the assembly: https://www.felixcloutier.com/x86
 impl Program {
-    fn assembly_function(&mut self, name: &str, executable: &Vec<Executable>) -> Function {
+    fn write_function(&mut self, name: &str) -> Result<()> {
+        let Symbol::Function { function, written } = unsafe { &*(self as *const Self) }
+            .symbols
+            .get(name)
+            .wrap_err_with(|| format!("Function {name} doesn't exist."))?
+        else {
+            return Err(eyre!("{name} is not a function."));
+        };
+
+        if !written {
+            let mut compiler_result = function.compile(self)?;
+            self.text.append(&mut compiler_result);
+        }
+
+        let Symbol::Function { written, .. } = self.symbols.get_mut(name).unwrap() else {
+            unreachable!()
+        };
+        *written = true;
+
+        Ok(())
+    }
+
+    fn assembly_function(&mut self, name: &str, executable: &[Executable]) -> Function {
         self.binary_function(name, self.as_binary(executable))
     }
 
@@ -364,19 +368,19 @@ impl Program {
         vec![UnlinkedTextSectionElement::Binary(bin)]
     }
 
-    fn as_binary(&self, executable: &Vec<Executable>) -> Vec<UnlinkedTextSectionElement> {
+    fn as_binary(&self, executable: &[Executable]) -> Vec<UnlinkedTextSectionElement> {
         executable
-            .into_iter()
+            .iter()
             .flat_map(|executable| self.one_as_binary(executable))
             .collect()
     }
 }
 
-fn basic_functions(program_context: &mut Program) -> Result<()> {
+fn basic_functions(program_context: &mut Program) -> Result<Function> {
     let functions = [
         program_context.assembly_function(
             "putchar",
-            &vec![
+            &[
                 Executable::MoveLoad {
                     src: Loadable::Register(Register::Rdi),
                     dest: Loadable::Stack,
@@ -404,7 +408,7 @@ fn basic_functions(program_context: &mut Program) -> Result<()> {
         ),
         program_context.assembly_function(
             "exit",
-            &vec![
+            &[
                 Executable::MoveLoad {
                     src: Loadable::Immediate(60),
                     dest: Loadable::Register(Register::Rax),
@@ -414,12 +418,12 @@ fn basic_functions(program_context: &mut Program) -> Result<()> {
                     dest: Loadable::Register(Register::Rdi),
                 },
                 Executable::Syscall,
-                Executable::Ret,
             ],
         ),
     ];
 
     for function in functions {
+        let ident = function.ident.clone();
         program_context.symbols.insert(
             function.ident.clone(),
             Symbol::Function {
@@ -427,9 +431,22 @@ fn basic_functions(program_context: &mut Program) -> Result<()> {
                 written: false,
             },
         );
+        program_context.write_function(&ident).impossible()?;
     }
 
-    Ok(())
+    let start = program_context.assembly_function(
+        "_start",
+        &[
+            Executable::Call {
+                label: "main".to_string(),
+            },
+            Executable::Call {
+                label: "exit".to_string(),
+            },
+        ],
+    );
+
+    Ok(start)
 }
 
 struct Rex {
@@ -508,25 +525,23 @@ impl ModRM {
     }
 }
 
-pub fn compile_main(mut ast: Ast) -> Result<Vec<u8>> {
-    ast.statements.push(Statement::Expression {
-        value: Expression::FunctionCall {
-            function_name: "exit".to_string(),
-            arguments: vec![],
-        },
-    });
+pub fn compile_main(ast: Ast) -> Result<Vec<u8>> {
+    let mut program_context = Program::new();
+    let mut res = Vec::new();
 
-    let main = Function {
+    let start = basic_functions(&mut program_context)?;
+
+    let mut compiled = Function {
         ident: "main".to_string(),
         code: Code::Ast(ast),
         symbols: HashMap::new(),
-    };
+    }
+    .compile(&mut program_context)?;
 
-    let mut program_context = Program::new();
-    basic_functions(&mut program_context)?;
+    res.append(&mut compiled);
+    res.append(&mut start.compile(&mut program_context)?);
 
-    let compiled = main.compile(&mut program_context)?;
-    let elf = generate_elf(link(compiled).wrap_err("Linker failed.")?, b"hi".to_vec());
+    let elf = generate_elf(link(res).wrap_err("Linker failed.")?, b"hi".to_vec());
     Ok(elf)
 }
 
@@ -571,12 +586,11 @@ impl Function {
         for statement in &ast.statements {
             let executable = match statement {
                 Statement::Expression { value } => {
-                    resolve_standalone_expression(&value, program_context)
+                    resolve_standalone_expression(value, program_context)
                         .wrap_err("Failed to resolve standalone expression.")?
                 }
                 _ => todo!(),
             };
-            debug!("Generated high level assembly: {executable:?}");
             program_context.text.push(Label {
                 ident: self.ident.clone(),
                 code: program_context.as_binary(&executable),

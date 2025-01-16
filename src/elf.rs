@@ -183,7 +183,7 @@ impl ElfGenerator {
             let program_header = Elf64ProgramHeader {
                 p_type,
                 p_flags,
-                p_offset: header_size + n as u64,
+                p_offset: header_size + n,
                 p_vaddr: addr,
                 p_paddr: addr,
                 p_filesz: content_len,

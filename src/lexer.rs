@@ -10,11 +10,14 @@ pub enum Token {
     Div,
     LParen,
     RParen,
+    LCurly,
+    RCurly,
     Comma,
     Equal,
     Int(i64),
     Ident(String),
     Let,
+    Fn,
     Semi,
     Eof,
 }
@@ -28,10 +31,13 @@ impl Display for Token {
             Token::Div => write!(f, "/"),
             Token::LParen => write!(f, "("),
             Token::RParen => write!(f, ")"),
+            Token::LCurly => write!(f, "{{"),
+            Token::RCurly => write!(f, "}}"),
             Token::Comma => write!(f, ","),
             Token::Equal => write!(f, "="),
             Token::Semi => write!(f, ";"),
             Token::Let => write!(f, "the `let` keyword"),
+            Token::Fn => write!(f, "the `fn` keyword"),
             Token::Int(x) => write!(f, "an integer ({x})"),
             Token::Ident(x) => write!(f, "an identifier (\"{x}\")"),
             Token::Eof => write!(f, "the end of the file"),
@@ -107,6 +113,8 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>> {
             '/' => Token::Div,
             '(' => Token::LParen,
             ')' => Token::RParen,
+            '{' => Token::LCurly,
+            '}' => Token::RCurly,
             ',' => Token::Comma,
             '=' => Token::Equal,
             ';' => Token::Semi,
@@ -128,6 +136,7 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>> {
 
                 match string.as_str() {
                     "let" => Token::Let,
+                    "fn" => Token::Fn,
                     _ => Token::Ident(string),
                 }
             }
