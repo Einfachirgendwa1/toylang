@@ -466,21 +466,11 @@ impl Rex {
     }
 
     const fn prefix(&self) -> u8 {
-        let mut val = 0b01000000u8;
-        if self.w {
-            val |= 0b1000;
-        }
-        if self.r {
-            val |= 0b100;
-        }
-        if self.x {
-            val |= 0b10;
-        }
-        if self.b {
-            val |= 0b1;
-        }
-
-        val
+        (1 << 6)
+            | (self.w as u8 * (1 << 3))
+            | (self.r as u8 * (1 << 2))
+            | (self.x as u8 * (1 << 1))
+            | (self.b as u8)
     }
 }
 
