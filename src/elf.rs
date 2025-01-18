@@ -225,8 +225,6 @@ impl ElfGenerator {
                 sh_addr = ENTRY + file_content.len() as u64;
             }
 
-            println!("{sh_name}");
-
             let sh_size = content.len() as u64;
             align_vector(&mut content, content_align);
 

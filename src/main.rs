@@ -45,16 +45,14 @@ impl Log for Logger {
 
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
-            println!(
-                "{}",
-                match record.level() {
-                    Level::Error => format!("[ERROR] {}", record.args()).red(),
-                    Level::Warn => format!("[WARN ] {}", record.args()).yellow(),
-                    Level::Info => format!("[INFO ] {}", record.args()).cyan(),
-                    Level::Debug => format!("[DEBUG] {}", record.args()).green(),
-                    Level::Trace => format!("[TRACE] {}", record.args()).black(),
-                }
-            );
+            let msg = match record.level() {
+                Level::Error => format!("[ERROR] {}", record.args()).red(),
+                Level::Warn => format!("[WARN ] {}", record.args()).yellow(),
+                Level::Info => format!("[INFO ] {}", record.args()).cyan(),
+                Level::Debug => format!("[DEBUG] {}", record.args()).green(),
+                Level::Trace => format!("[TRACE] {}", record.args()).black(),
+            };
+            println!("{msg}");
         }
     }
 
