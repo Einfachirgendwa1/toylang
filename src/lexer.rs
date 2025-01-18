@@ -50,7 +50,7 @@ fn is_digit(c: &char) -> bool {
 }
 
 fn is_normal_character(c: &char) -> bool {
-    c.is_digit(36)
+    c.is_digit(36) || *c == '_'
 }
 
 fn is_legal(c: &char) -> bool {

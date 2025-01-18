@@ -1,3 +1,4 @@
+use crate::err;
 use crate::Impossible;
 use crate::Token;
 use crate::UnlinkedTextSectionElement;
@@ -6,7 +7,7 @@ use std::fmt::Display;
 
 use eyre::{eyre, Report, Result, WrapErr};
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct Ast {
     pub statements: Vec<Statement>,
 }
@@ -17,12 +18,12 @@ pub enum Code {
     Binary(Vec<UnlinkedTextSectionElement>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Clone, Debug)]
 pub enum Statement {
     FunctionDefinition {
         function_name: String,
         parameters: Vec<String>,
-        code: Ast,
+        result: Expression,
     },
     VariableAssignment {
         variable_name: String,
@@ -33,9 +34,6 @@ pub enum Statement {
     },
     Expression {
         value: Expression,
-    },
-    CodeBlock {
-        ast: Ast,
     },
     NullOpt,
 }
@@ -52,15 +50,14 @@ impl Display for Statement {
             Statement::FunctionDefinition {
                 function_name,
                 parameters: _,
-                code: _,
+                result: _,
             } => write!(f, "definition of function `{function_name}`"),
-            Statement::CodeBlock { ast: _ } => write!(f, "code block"),
             Statement::NullOpt => write!(f, "empty statement"),
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum Expression {
     FunctionCall {
         function_name: String,
@@ -74,9 +71,16 @@ pub enum Expression {
     LiteralInt {
         value: i64,
     },
+    Tuple {
+        values: Vec<Expression>,
+    },
+    CodeBlock {
+        ast: Ast,
+    },
     Variable {
         name: String,
     },
+    Unit,
 }
 
 impl Display for Expression {
@@ -93,11 +97,22 @@ impl Display for Expression {
             } => write!(f, "{left_side} {operator} {right_side}"),
             Expression::LiteralInt { value } => write!(f, "{value}"),
             Expression::Variable { name } => write!(f, "variable {name}"),
+            Expression::Tuple { values } => {
+                let formatted = values
+                    .iter()
+                    .map(Expression::to_string)
+                    .collect::<Vec<String>>()
+                    .join(", ");
+
+                write!(f, "({formatted})")
+            }
+            Expression::CodeBlock { ast } => write!(f, "a code block: {ast:?}"),
+            Expression::Unit => write!(f, "the unit type"),
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum Operator {
     Add,
     Sub,
@@ -130,11 +145,15 @@ impl TryFrom<Token> for Operator {
     }
 }
 
+pub enum ExpressionParsingResult {
+    Success { statement: Statement },
+    Invalid { token: Token },
+}
+
 pub fn remaining_expression_parsing(
     expression: Expression,
     tokens: &mut impl Iterator<Item = Token>,
-    on_failed_parsing: impl FnOnce(Token, &mut dyn Iterator<Item = Token>) -> Result<Statement>,
-) -> Result<Statement> {
+) -> Result<ExpressionParsingResult> {
     let statement = match tokens.next().impossible()? {
         Token::Semi | Token::Eof => Statement::Expression { value: expression },
         x @ (Token::Add | Token::Sub | Token::Mul | Token::Div) => {
@@ -146,9 +165,7 @@ pub fn remaining_expression_parsing(
             {
                 Statement::Expression { value } => value,
                 x => {
-                    return Err(eyre!(
-                        "Exprected right side of expression to be an expression, found {x}"
-                    ))
+                    err!("Exprected right side of expression to be an expression, found {x}")
                 }
             };
 
@@ -164,21 +181,25 @@ pub fn remaining_expression_parsing(
                 },
             }
         }
-        x => on_failed_parsing(x, tokens)?,
+        token => return Ok(ExpressionParsingResult::Invalid { token }),
     };
 
-    Ok(statement)
+    Ok(ExpressionParsingResult::Success { statement })
 }
 
-pub fn find_closing_brace(tokens: &mut dyn Iterator<Item = Token>) -> Result<Vec<Token>> {
+pub fn find_closing_brace(
+    open: Token,
+    close: Token,
+    tokens: &mut dyn Iterator<Item = Token>,
+) -> Result<Vec<Token>> {
     let mut tokens_in_parens = Vec::new();
     loop {
         let mut depth = 1;
         match tokens.next() {
             None => return Err(eyre!("Parenthesis was never closed.")),
-            Some(Token::LParen) => depth += 1,
-            Some(Token::RParen) => depth -= 1,
-            Some(x) => tokens_in_parens.push(x),
+            Some(t) if t == open => depth += 1,
+            Some(t) if t == close => depth -= 1,
+            Some(t) => tokens_in_parens.push(t),
         }
 
         if depth == 0 {
@@ -262,7 +283,6 @@ pub fn get_next_statement(tokens: &mut impl Iterator<Item = Token>) -> Result<Op
             }
 
             let code = match get_next_statement(tokens) {
-                Ok(Some(Statement::CodeBlock { ast })) => ast,
                 Ok(Some(statement)) => Ast {
                     statements: vec![statement],
                 },
@@ -280,7 +300,7 @@ pub fn get_next_statement(tokens: &mut impl Iterator<Item = Token>) -> Result<Op
             Statement::FunctionDefinition {
                 function_name,
                 parameters,
-                code,
+                result: Expression::CodeBlock { ast: code },
             }
         }
 
@@ -308,13 +328,30 @@ pub fn get_next_statement(tokens: &mut impl Iterator<Item = Token>) -> Result<Op
             Ok(Some(y)) => return Err(eyre!("Expected Expression after `-`, got {y}")),
         },
 
-        Token::LParen | Token::LCurly => Statement::CodeBlock {
-            ast: parse(
-                find_closing_brace(tokens)
-                    .wrap_err("Failed to parse tokens within a single opening parenthesis")?,
-            )
-            .wrap_err("Failed to parse tokens in parenthesis.")?,
-        },
+        Token::LParen => {
+            let values = find_closing_brace(Token::LParen, Token::RParen, tokens)
+                .wrap_err("Failed to parse tokens withing parenthesis.")?
+                .split(|x| *x == Token::Comma)
+                .map(|x| Expression::CodeBlock {
+                    ast: parse(x.to_vec()).unwrap(),
+                })
+                .collect();
+
+            Statement::Expression {
+                value: Expression::Tuple { values },
+            }
+        }
+
+        Token::LCurly => {
+            let block = find_closing_brace(Token::LCurly, Token::RCurly, tokens)
+                .wrap_err("Failed to parse tokens within curly braces.")?;
+
+            Statement::Expression {
+                value: Expression::CodeBlock {
+                    ast: parse(block).wrap_err("Failed to parse tokens in parenthesis.")?,
+                },
+            }
+        }
 
         x @ (Token::Mul
         | Token::Div
@@ -326,59 +363,61 @@ pub fn get_next_statement(tokens: &mut impl Iterator<Item = Token>) -> Result<Op
         Token::Eof => return Ok(None),
 
         Token::Int(value) => {
-            remaining_expression_parsing(Expression::LiteralInt { value }, tokens, |token, _| {
-                Err(eyre!("Expression followed by invalid token: {token}"))
-            })
-            .wrap_err_with(|| format!("Failed to parse the tokens after the integer {value}"))?
+            match remaining_expression_parsing(Expression::LiteralInt { value }, tokens) {
+                Err(err) => Err(err).wrap_err_with(|| {
+                    format!("Failed to parse the tokens after the integer {value}")
+                })?,
+                Ok(ExpressionParsingResult::Invalid { token }) => {
+                    Err(eyre!("Expression followed by invalid token: {token}"))?
+                }
+                Ok(ExpressionParsingResult::Success { statement }) => statement,
+            }
         }
 
         Token::Semi => Statement::NullOpt,
 
         Token::Ident(ident) => {
-            let ident_clone = ident.clone();
-            remaining_expression_parsing(
-            Expression::Variable {
-                name: ident.clone(),
-            },
-            tokens,
-            |token, tokens| match token {
-                Token::LParen => {
-                    let mut args = Vec::new();
-                    for item in find_closing_brace(tokens)
-                        .wrap_err_with(|| {
-                            format!(
-                                "Failed to parse the arguments of the {ident}(...) function call."
-                            )
-                        })?
-                        .split(|token| *token == Token::Comma)
-                        .map(|token| {
-                            parse(token.to_vec())
-                                .wrap_err_with(|| format!("Failed to parse argument to {ident}."))
-                        })
-                    {
-                            let ast = item?;
-                            match ast.statements.len() {
-                                0 => return Err( eyre!("Found to commas without an expression between them in function call {ident}.")),
-                                1 => {
-                                    let Statement::Expression { ref value } = ast.statements[0] else {
-                                        return Err( eyre!("Function parameters have to be statements, but one call of {ident} passes: {}", ast.statements[0]))
-                                    };
-                                    args.push(value.clone());
-                                }
-                                2.. => return Err( eyre!("Found multiple statements not sperated by a comma in function call {ident}.")),
+            let res = remaining_expression_parsing(
+                Expression::Variable {
+                    name: ident.clone(),
+                },
+                tokens,
+            );
+
+            match res
+                .wrap_err_with(|| format!("Failed to parse the expression starting with {ident}"))?
+            {
+                ExpressionParsingResult::Success { statement } => statement,
+                ExpressionParsingResult::Invalid { token } => match token {
+                    Token::LParen => {
+                        let mut args = Vec::new();
+                        let content = find_closing_brace(Token::LParen, Token::RParen, tokens)
+                            .wrap_err_with(|| {
+                                format!("Failed to parse arguments of {ident}(...)")
+                            })?;
+
+                        let tokens = content.split(|token| *token == Token::Comma);
+
+                        for item in tokens {
+                            let ast = parse(item.to_vec())?;
+
+                            let mut statements = ast.statements.iter();
+
+                            while let Some(Statement::Expression { value }) = statements.next() {
+                                args.push(value.clone());
                             }
+                        }
+
+                        Statement::Expression {
+                            value: Expression::FunctionCall {
+                                function_name: ident,
+                                arguments: args,
+                            },
+                        }
                     }
-                    Ok(Statement::Expression {
-                        value: Expression::FunctionCall {
-                            function_name: ident,
-                            arguments: args,
-                        },
-                    })
-                }
-                x => Err( eyre!("Invalid token after identifier {ident}: {x}")),
-            },
-        )
-        .wrap_err_with(|| format!("Failed to parse the expression starting with {ident_clone}"))?
+                    x => err!("Invalid token after identifier {ident}: {x}"),
+                },
+            }
         }
     };
 

@@ -3,7 +3,7 @@ use crate::{elf::generate_elf, link, Ast, Code, Expression, Impossible, Statemen
 use std::{collections::HashMap, iter::repeat};
 
 use eyre::{eyre, ContextCompat, Result, WrapErr};
-use log::warn;
+use log::{debug, warn};
 
 #[derive(Clone, Copy, Debug)]
 pub enum Register {
@@ -149,11 +149,11 @@ fn move_all(parameters: Vec<Load>) -> Vec<Executable> {
         .collect()
 }
 
-fn load(expression: &Expression, program_context: &mut Program) -> Result<Load> {
+fn load(expression: &Expression, program: &mut Program) -> Result<Load> {
     let load = match expression {
         Expression::LiteralInt { value } => Load::simple(Loadable::Immediate(*value)),
         Expression::Variable { name } => {
-            let Symbol::Variable(_var) = program_context
+            let Symbol::Variable(_var) = program
                 .symbols
                 .get(name)
                 .with_context(|| format!("Variable {name} doesn't exist!"))?
@@ -170,18 +170,18 @@ fn load(expression: &Expression, program_context: &mut Program) -> Result<Load> 
         Expression::FunctionCall {
             function_name,
             arguments,
-        } => build_function(function_name, arguments, program_context)?,
+        } => build_function(function_name, arguments, program)?,
         _ => todo!(),
     };
 
     Ok(load)
 }
 
-fn build_function(name: &str, args: &[Expression], program_context: &mut Program) -> Result<Load> {
-    program_context.write_function(name)?;
+fn build_function(name: &str, args: &[Expression], program: &mut Program) -> Result<Load> {
+    program.write_function(name)?;
 
     let mut loads = Vec::new();
-    for element in args.iter().map(|arg| load(arg, program_context)) {
+    for element in args.iter().map(|arg| load(arg, program)) {
         loads.push(element.wrap_err("In function parameter.")?)
     }
 
@@ -199,14 +199,14 @@ fn build_function(name: &str, args: &[Expression], program_context: &mut Program
 
 fn resolve_standalone_expression(
     value: &Expression,
-    program_context: &mut Program,
+    program: &mut Program,
 ) -> Result<Vec<Executable>> {
     match value {
         Expression::FunctionCall {
             function_name,
             arguments: args,
         } => {
-            let mut load = build_function(function_name, args, program_context)?;
+            let mut load = build_function(function_name, args, program)?;
             let mut vec = load.code_pre;
             vec.append(&mut load.code_post);
             Ok(vec)
@@ -214,16 +214,17 @@ fn resolve_standalone_expression(
         Expression::MathematicalOperation {
             left_side,
             right_side,
-            operator: _,
+            ..
         } => {
-            let mut vec = resolve_standalone_expression(left_side, program_context)?;
-            let mut rhs = resolve_standalone_expression(right_side, program_context)?;
+            let mut vec = resolve_standalone_expression(left_side, program)?;
+            let mut rhs = resolve_standalone_expression(right_side, program)?;
             vec.append(&mut rhs);
             Ok(vec)
         }
+        Expression::CodeBlock { ast } => ast.compile(program, "<anonymous code block>"),
 
         expr => {
-            warn!("Unused expression {expr}");
+            warn!("Unused expression: {expr}. Refusing to compile.");
             Ok(Vec::new())
         }
     }
@@ -258,7 +259,7 @@ impl Program {
     }
 
     fn assembly_function(&mut self, name: &str, executable: &[Executable]) -> Function {
-        self.binary_function(name, self.as_binary(executable))
+        self.binary_function(name, self.generate_binary(executable))
     }
 
     fn binary_function(&mut self, name: &str, binary: Vec<UnlinkedTextSectionElement>) -> Function {
@@ -368,7 +369,7 @@ impl Program {
         vec![UnlinkedTextSectionElement::Binary(bin)]
     }
 
-    fn as_binary(&self, executable: &[Executable]) -> Vec<UnlinkedTextSectionElement> {
+    fn generate_binary(&self, executable: &[Executable]) -> Vec<UnlinkedTextSectionElement> {
         executable
             .iter()
             .flat_map(|executable| self.one_as_binary(executable))
@@ -376,9 +377,9 @@ impl Program {
     }
 }
 
-fn basic_functions(program_context: &mut Program) -> Result<Function> {
+fn basic_functions(program: &mut Program) -> Result<Function> {
     let functions = [
-        program_context.assembly_function(
+        program.assembly_function(
             "putchar",
             &[
                 Executable::MoveLoad {
@@ -406,7 +407,7 @@ fn basic_functions(program_context: &mut Program) -> Result<Function> {
                 Executable::Ret,
             ],
         ),
-        program_context.assembly_function(
+        program.assembly_function(
             "exit",
             &[
                 Executable::MoveLoad {
@@ -424,17 +425,17 @@ fn basic_functions(program_context: &mut Program) -> Result<Function> {
 
     for function in functions {
         let ident = function.ident.clone();
-        program_context.symbols.insert(
+        program.symbols.insert(
             function.ident.clone(),
             Symbol::Function {
                 function,
                 written: false,
             },
         );
-        program_context.write_function(&ident).impossible()?;
+        program.write_function(&ident).impossible()?;
     }
 
-    let start = program_context.assembly_function(
+    let start = program.assembly_function(
         "_start",
         &[
             Executable::Call {
@@ -516,23 +517,76 @@ impl ModRM {
 }
 
 pub fn compile_main(ast: Ast) -> Result<Vec<u8>> {
-    let mut program_context = Program::new();
-    let mut res = Vec::new();
+    let mut program = Program::new();
 
-    let start = basic_functions(&mut program_context)?;
+    basic_functions(&mut program)?.bake(&mut program)?;
 
-    let mut compiled = Function {
+    let main = Function {
         ident: "main".to_string(),
         code: Code::Ast(ast),
         symbols: HashMap::new(),
-    }
-    .compile(&mut program_context)?;
+    };
 
-    res.append(&mut compiled);
-    res.append(&mut start.compile(&mut program_context)?);
+    main.bake(&mut program)?;
 
-    let elf = generate_elf(link(res).wrap_err("Linker failed.")?, b"hi".to_vec());
+    let linker_output = link(program).wrap_err("Linker failed.")?;
+    let elf = generate_elf(linker_output, b"hi".to_vec());
     Ok(elf)
+}
+
+impl Ast {
+    fn compile(&self, program: &mut Program, name: &str) -> Result<Vec<Executable>> {
+        debug!("Compiling `{}`", name);
+
+        let mut executable = Vec::new();
+        for statement in &self.statements {
+            match statement {
+                Statement::Expression { value } => {
+                    let mut instructions = resolve_standalone_expression(value, program)
+                        .wrap_err("Failed to resolve standalone expression.")?;
+                    executable.append(&mut instructions)
+                }
+                Statement::FunctionDefinition {
+                    function_name,
+                    parameters,
+                    result,
+                } => {
+                    let statements = vec![
+                        Statement::Expression {
+                            value: result.clone(),
+                        },
+                        Statement::Return {
+                            value: Expression::Unit,
+                        },
+                    ];
+
+                    let function = Function {
+                        code: Code::Ast(Ast { statements }),
+                        ident: function_name.clone(),
+                        symbols: load_all(parameters.clone()),
+                    };
+
+                    program.symbols.insert(
+                        function_name.clone(),
+                        Symbol::Function {
+                            function,
+                            written: false,
+                        },
+                    );
+                }
+
+                x @ Statement::Return { value } => {
+                    if *value != Expression::Unit {
+                        todo!("{x}");
+                    }
+                    executable.push(Executable::Ret);
+                }
+                x => todo!("{x}"),
+            };
+        }
+
+        Ok(executable)
+    }
 }
 
 impl Function {
@@ -544,49 +598,34 @@ impl Function {
         }
     }
 
-    pub fn compile(&self, program_context: &mut Program) -> Result<Vec<Label>> {
-        let mut functions_within = HashMap::new();
+    pub fn bake(&self, program: &mut Program) -> Result<()> {
+        program.symbols.insert(
+            self.ident.clone(),
+            Symbol::Function {
+                function: self.clone(),
+                written: false,
+            },
+        );
+        program.write_function(&self.ident)
+    }
 
+    pub fn compile(&self, program: &mut Program) -> Result<Vec<Label>> {
         let ast = match &self.code {
             Code::Ast(ast) => ast,
             Code::Binary(binary) => {
+                debug!("Appending binary func `{}`", self.ident);
                 return Ok(vec![Label {
                     ident: self.ident.clone(),
                     code: binary.clone(),
-                }])
+                }]);
             }
         };
 
-        for statement in &ast.statements {
-            if let Statement::FunctionDefinition {
-                function_name,
-                parameters,
-                code,
-            } = statement
-            {
-                let function = Function {
-                    code: Code::Ast(code.clone()),
-                    ident: function_name.clone(),
-                    symbols: load_all(parameters.clone()),
-                };
-                functions_within.insert(function_name.clone(), function);
-            }
-        }
+        let executable = ast.compile(program, &self.ident)?;
 
-        for statement in &ast.statements {
-            let executable = match statement {
-                Statement::Expression { value } => {
-                    resolve_standalone_expression(value, program_context)
-                        .wrap_err("Failed to resolve standalone expression.")?
-                }
-                _ => todo!(),
-            };
-            program_context.text.push(Label {
-                ident: self.ident.clone(),
-                code: program_context.as_binary(&executable),
-            })
-        }
-
-        Ok(program_context.text.clone())
+        Ok(vec![Label {
+            ident: self.ident.clone(),
+            code: program.generate_binary(&executable),
+        }])
     }
 }

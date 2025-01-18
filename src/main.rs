@@ -25,6 +25,7 @@ use log::{info, set_logger, set_max_level, warn, Level, LevelFilter, Log, SetLog
 
 #[derive(Parser)]
 struct Cli {
+    #[arg(default_value = "main.tl")]
     input: String,
 
     #[arg(short, long, global = true)]

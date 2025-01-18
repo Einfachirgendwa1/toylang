@@ -1,9 +1,9 @@
 use std::collections::{HashMap, VecDeque};
 
-use crate::{Impossible, Label, UnlinkedTextSectionElement};
+use crate::{Impossible, Label, Program, UnlinkedTextSectionElement};
 
 use eyre::Result;
-use log::debug;
+use log::{debug, warn};
 
 pub struct LinkerOutput {
     pub code: Vec<u8>,
@@ -12,9 +12,9 @@ pub struct LinkerOutput {
     pub symtab_sh_info: u32,
 }
 
-pub fn link(code: Vec<Label>) -> Result<LinkerOutput> {
+pub fn link(program: Program) -> Result<LinkerOutput> {
     let mut res = Vec::new();
-    let mut code = VecDeque::from(code);
+    let mut code = VecDeque::from(program.text);
 
     while let Some(next) = code.pop_front() {
         let ident = next.ident.to_string();
@@ -42,12 +42,12 @@ pub fn link(code: Vec<Label>) -> Result<LinkerOutput> {
     let start = code.remove(
         code.iter()
             .position(|label| label.ident.as_str() == "_start")
-            .impossible()?,
+            .impossible_message("_start label not found.")?,
     );
 
     code.iter_mut()
         .find(|x| x.ident == "main")
-        .impossible()?
+        .impossible_message("main function not found.")?
         .code
         .push(UnlinkedTextSectionElement::Binary(vec![0xC3]));
 
@@ -58,6 +58,10 @@ pub fn link(code: Vec<Label>) -> Result<LinkerOutput> {
     let mut position = 0;
     for label in &code {
         function_map.insert(label.ident.clone(), position);
+
+        if label.code.is_empty() {
+            warn!("Empty label: {}", label.ident)
+        }
 
         for code in &label.code {
             match code {
