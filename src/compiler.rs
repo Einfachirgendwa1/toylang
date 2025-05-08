@@ -5,6 +5,30 @@ use std::{collections::HashMap, iter::repeat};
 use eyre::{eyre, ContextCompat, Result, WrapErr};
 use log::{debug, warn};
 
+#[derive(PartialEq, Debug, Clone)]
+pub enum TypeType {
+    Struct { fields: Vec<Field> },
+    Enum {},
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct Field {
+    pub name: Option<String>,
+    pub field_type: String,
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct Case {
+    pub name: String,
+    pub fields: Vec<Field>,
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct Type {
+    pub ident: Option<String>,
+    pub type_type: TypeType,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum Register {
     Rax,
@@ -75,6 +99,7 @@ pub enum Loadable {
 pub enum Symbol {
     Variable(Expression),
     Function { function: Function, written: bool },
+    Type(TypeType),
 }
 
 #[derive(Clone, Debug)]
@@ -536,7 +561,7 @@ pub fn compile_main(ast: Ast) -> Result<Vec<u8>> {
 
 impl Ast {
     fn compile(&self, program: &mut Program, name: &str) -> Result<Vec<Executable>> {
-        debug!("Compiling `{}`", name);
+        debug!("Compiling `{name}`");
 
         let mut executable = Vec::new();
         for statement in &self.statements {
@@ -573,6 +598,16 @@ impl Ast {
                             written: false,
                         },
                     );
+                }
+
+                Statement::TypeDefinition {
+                    defined_type: Type { ident, type_type },
+                } => {
+                    if let Some(ident) = ident {
+                        program
+                            .symbols
+                            .insert(ident.clone(), Symbol::Type(type_type.clone()));
+                    }
                 }
 
                 x @ Statement::Return { value } => {

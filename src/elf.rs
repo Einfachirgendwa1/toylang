@@ -1,7 +1,12 @@
-use crate::{Elf64Sym, LinkerOutput};
 use std::slice;
 
+use crate::{Elf64Sym, Impossible, LinkerOutput};
+
 use cascade::cascade;
+use gimli::{
+    write::{Address, AttributeValue, DwarfUnit, EndianVec, Range, RangeList, Sections},
+    DW_AT_ranges, Encoding, Format, LittleEndian,
+};
 
 const PAGE_SIZE: u64 = 0x1000;
 const ENTRY: u64 = 0x400000;
@@ -288,6 +293,47 @@ pub fn generate_elf(
             ..SH::new()
         };
         elf_generator.section(".data", data_section);
+    }
+
+    // .debug_info
+    {
+        let encoding = Encoding {
+            address_size: 8,
+            format: Format::Dwarf64,
+            version: 5,
+        };
+
+        let mut dwarf = DwarfUnit::new(encoding);
+        let range_list = RangeList(vec![Range::StartLength {
+            // FIXME:
+            begin: Address::Constant(0x100),
+            length: 42,
+        }]);
+
+        let range_list_id = dwarf.unit.ranges.add(range_list);
+        dwarf
+            .unit
+            .get_mut(dwarf.unit.root())
+            .set(DW_AT_ranges, AttributeValue::RangeListRef(range_list_id));
+
+        let mut sections = Sections::new(EndianVec::new(LittleEndian));
+        dwarf.write(&mut sections).impossible().unwrap();
+
+        let mut content = Vec::new();
+        sections
+            .for_each(|_, data| {
+                content.append(&mut data.clone().into_vec());
+                Result::<(), ()>::Ok(())
+            })
+            .unwrap();
+
+        let debug_info_section = SH {
+            content,
+            sh_type: 1,
+            ..Default::default()
+        };
+
+        elf_generator.section(".debug_info", debug_info_section);
     }
 
     // .symtab

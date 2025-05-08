@@ -18,6 +18,9 @@ pub enum Token {
     Ident(String),
     Let,
     Fn,
+    Struct,
+    Enum,
+    Colon,
     Semi,
     Eof,
 }
@@ -34,10 +37,13 @@ impl Display for Token {
             Token::LCurly => write!(f, "{{"),
             Token::RCurly => write!(f, "}}"),
             Token::Comma => write!(f, ","),
+            Token::Colon => write!(f, ":"),
             Token::Equal => write!(f, "="),
             Token::Semi => write!(f, ";"),
             Token::Let => write!(f, "the `let` keyword"),
             Token::Fn => write!(f, "the `fn` keyword"),
+            Token::Struct => write!(f, "the `struct` keyword"),
+            Token::Enum => write!(f, "the `enum` keyword"),
             Token::Int(x) => write!(f, "an integer ({x})"),
             Token::Ident(x) => write!(f, "an identifier (\"{x}\")"),
             Token::Eof => write!(f, "the end of the file"),
@@ -91,7 +97,7 @@ where
     }
 }
 
-fn build_string_from_init_and_while(c: &char, mut next: impl FnMut() -> Option<char>) -> String {
+fn build_string_from_init_and_collect(c: &char, mut next: impl FnMut() -> Option<char>) -> String {
     let mut out = c.to_string();
 
     while let Some(next) = next() {
@@ -118,8 +124,9 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>> {
             ',' => Token::Comma,
             '=' => Token::Equal,
             ';' => Token::Semi,
+            ':' => Token::Colon,
             ref x if is_digit(x) => Token::Int(
-                build_string_from_init_and_while(x, || match is_digit(&input.peek()?) {
+                build_string_from_init_and_collect(x, || match is_digit(&input.peek()?) {
                     true => input.next(),
                     false => None,
                 })
@@ -127,7 +134,7 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>> {
                 .unwrap(),
             ),
             ref x if is_normal_character(x) => {
-                let string = build_string_from_init_and_while(x, || {
+                let string = build_string_from_init_and_collect(x, || {
                     match is_normal_character(input.0.peek()?) {
                         true => input.next(),
                         false => None,
@@ -137,6 +144,8 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>> {
                 match string.as_str() {
                     "let" => Token::Let,
                     "fn" => Token::Fn,
+                    "struct" => Token::Struct,
+                    "enum" => Token::Enum,
                     _ => Token::Ident(string),
                 }
             }

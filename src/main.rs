@@ -107,6 +107,7 @@ fn main() -> Result<()> {
 
     let tokens = tokenize(&content).wrap_err("Failed to tokenize.")?;
     let ast = parse(tokens).wrap_err("Failed to parse.")?;
+    dbg!(&ast);
     let elf = compile_main(ast).wrap_err("Failed to compile.")?;
 
     File::create(&output).unwrap().write_all(&elf).unwrap();

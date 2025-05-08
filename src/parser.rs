@@ -1,6 +1,9 @@
 use crate::err;
+use crate::Field;
 use crate::Impossible;
 use crate::Token;
+use crate::Type;
+use crate::TypeType;
 use crate::UnlinkedTextSectionElement;
 
 use std::fmt::Display;
@@ -25,6 +28,9 @@ pub enum Statement {
         parameters: Vec<String>,
         result: Expression,
     },
+    TypeDefinition {
+        defined_type: Type,
+    },
     VariableAssignment {
         variable_name: String,
         value: Expression,
@@ -47,11 +53,18 @@ impl Display for Statement {
             } => write!(f, "assignment of {value} to `{variable_name}`"),
             Statement::Return { value } => write!(f, "return {value}"),
             Statement::Expression { value } => write!(f, "expression {value}"),
-            Statement::FunctionDefinition {
-                function_name,
-                parameters: _,
-                result: _,
-            } => write!(f, "definition of function `{function_name}`"),
+            Statement::FunctionDefinition { function_name, .. } => {
+                write!(f, "definition of function `{function_name}`")
+            }
+            Statement::TypeDefinition {
+                defined_type: Type { ident, .. },
+            } => {
+                let name = match ident {
+                    Some(name) => name,
+                    None => "<anonymous>",
+                };
+                write!(f, "definition of type {name}")
+            }
             Statement::NullOpt => write!(f, "empty statement"),
         }
     }
@@ -304,6 +317,54 @@ pub fn get_next_statement(tokens: &mut impl Iterator<Item = Token>) -> Result<Op
             }
         }
 
+        x @ (Token::Struct | Token::Enum) => {
+            let Some(next_token) = tokens.next() else {
+                err!("Found end of file after {x}.");
+            };
+
+            // TODO: Handle Tuples
+            let type_name = match next_token {
+                Token::Ident(name) => {
+                    if tokens.next() != Some(Token::LCurly) {
+                        err!("Expected {{ after {x} and the name {name}");
+                    }
+                    Some(name)
+                }
+                Token::LCurly => None,
+                token => err!("Invalid Token after {x}: {token}"),
+            };
+
+            let toks = find_closing_brace(Token::LCurly, Token::RCurly, tokens)?.into_iter();
+
+            let type_type = match x {
+                Token::Struct => {
+                    let mut fields = Vec::new();
+                    match toks.take(3).collect::<Vec<_>>()[..] {
+                        [Token::Ident(ref name), Token::Colon, Token::Ident(ref type_name)] => {
+                            fields.push(Field {
+                                name: Some(name.clone()),
+                                field_type: type_name.clone(),
+                            })
+                        }
+                        [] => {}
+                        ref x => err!("malformed field! ({x:?})"),
+                    }
+                    TypeType::Struct { fields }
+                }
+                Token::Enum => {
+                    todo!()
+                }
+                _ => unreachable!(),
+            };
+
+            let defined_type = Type {
+                ident: type_name,
+                type_type,
+            };
+
+            Statement::TypeDefinition { defined_type }
+        }
+
         // TODO: Remove duplication
         Token::Add => match get_next_statement(tokens) {
             Err(err) => {
@@ -358,7 +419,8 @@ pub fn get_next_statement(tokens: &mut impl Iterator<Item = Token>) -> Result<Op
         | Token::Equal
         | Token::RParen
         | Token::RCurly
-        | Token::Comma) => return Err(eyre!("Detected junk: `{x}`")),
+        | Token::Comma
+        | Token::Colon) => err!("Garbage `{x}`."),
 
         Token::Eof => return Ok(None),
 

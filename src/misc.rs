@@ -13,7 +13,10 @@ pub trait Impossible<T> {
     fn impossible_message(self, msg: &str) -> Result<T>;
 }
 
-impl<T> Impossible<T> for Result<T> {
+impl<T, E> Impossible<T> for Result<T, E>
+where
+    Self: WrapErr<T, E>,
+{
     #[cold]
     fn impossible(self) -> Result<T> {
         self.wrap_err("This error should be impossible to reach. This is a bug in the compiler.")
